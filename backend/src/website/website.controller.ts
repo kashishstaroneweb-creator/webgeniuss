@@ -51,6 +51,30 @@ export class WebsiteController {
     return this.websiteService.getUserWebsites(targetUserId);
   }
 
+  @Get('placeholder-image')
+  async getPlaceholderImage(
+    @Query('websiteName') websiteName?: string,
+    @Query('prompt') prompt?: string,
+    @Query('width') width?: string,
+    @Query('height') height?: string,
+  ) {
+    const w = Math.min(1200, Math.max(48, parseInt(width || '400', 10) || 400));
+    const h = Math.min(800, Math.max(48, parseInt(height || '300', 10) || 300));
+    const url = await this.websiteService.getValidatedPlaceholderImage(
+      websiteName || '',
+      prompt || '',
+      w,
+      h,
+    );
+    if (!url) {
+      throw new HttpException(
+        { message: 'No Unsplash image available', statusCode: 404 },
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    return { url };
+  }
+
   @Get(':id')
   @UseGuards(JwtAuthGuard)
   async getWebsite(@CurrentUser() user: any, @Param('id') id: string) {

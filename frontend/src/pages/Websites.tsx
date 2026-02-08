@@ -27,6 +27,7 @@ interface ViteConfig {
 interface Website {
   id: string;
   websiteName: string;
+  prompt?: string;
   htmlCode?: string;
   cssCode?: string;
   jsCode?: string;
@@ -312,6 +313,7 @@ const Websites = () => {
                             components={website.components}
                             viteConfig={website.viteConfig}
                             websiteName={website.websiteName}
+                            prompt={website.prompt}
                             className="min-h-[500px]"
                           />
                         </div>
@@ -675,6 +677,7 @@ const Websites = () => {
             components={previewWebsite.components}
             viteConfig={previewWebsite.viteConfig}
             websiteName={previewWebsite.websiteName}
+            prompt={previewWebsite.prompt}
             isModal={true}
             onClose={() => setPreviewWebsite(null)}
           />

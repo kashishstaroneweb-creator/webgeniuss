@@ -26,12 +26,113 @@ interface WebsitePreviewProps {
   components?: Component[];
   viteConfig?: ViteConfig;
   websiteName?: string;
+  prompt?: string;
   onClose?: () => void;
   isModal?: boolean;
   className?: string;
 }
 
-const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, onClose, isModal = false, className }: WebsitePreviewProps) => {
+// Known globals and reserved names that must never get a fallback definition
+const PREVIEW_KNOWN_GLOBALS = new Set([
+  'React', 'ReactDOM', 'useState', 'useEffect', 'useRef', 'useCallback', 'useMemo', 'useContext', 'useReducer', 'createContext',
+  'createElement', 'Fragment', 'StrictMode', 'Component', 'PureComponent', 'Children', 'cloneElement', 'isValidElement',
+  'document', 'window', 'console', 'fetch', 'JSON', 'Object', 'Array', 'Number', 'String', 'Boolean', 'Map', 'Set', 'Promise',
+  'localStorage', 'sessionStorage',
+  'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame',
+  'Symbol', 'RegExp', 'Error', 'Math', 'Date', 'parseInt', 'parseFloat', 'isNaN', 'isFinite', 'decodeURIComponent', 'encodeURIComponent',
+  'true', 'false', 'null', 'undefined', 'NaN', 'Infinity',
+  'length', 'map', 'filter', 'forEach', 'push', 'pop', 'shift', 'unshift', 'slice', 'splice', 'indexOf', 'find', 'findIndex', 'includes',
+  'keys', 'values', 'entries', 'reduce', 'some', 'every', 'flat', 'join', 'concat', 'sort', 'reverse',
+  'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default', 'delete', 'do', 'else', 'export', 'extends',
+  'finally', 'for', 'function', 'if', 'import', 'in', 'instanceof', 'let', 'new', 'return', 'super', 'switch', 'this', 'throw',
+  'try', 'typeof', 'var', 'void', 'while', 'with', 'yield', 'async', 'await',
+]);
+
+/**
+ * Wrap adjacent JSX elements (e.g. in object values like icons) in a React fragment so Babel doesn't throw
+ * "Adjacent JSX elements must be wrapped in an enclosing tag".
+ */
+function wrapAdjacentJsxInFragment(code: string): string {
+  // Object property value that is 2+ adjacent self-closing JSX tags (e.g. users: <path .../><circle .../>,)
+  const adjacentJsxInObject = /:\s*((?:<[a-zA-Z][a-zA-Z0-9-]*(?:\s[^>]*)?\/>\s*){2,})(\s*)(,|\})/g;
+  return code.replace(adjacentJsxInObject, ': <>$1</>$2$3');
+}
+
+/**
+ * Find identifiers that are used in the script but not declared (and not components/globals).
+ * These get an empty-array fallback so the preview doesn't throw ReferenceError for any data variable.
+ */
+function getUsedButUndeclaredIdentifiers(
+  fullScript: string,
+  componentNames: string[],
+): string[] {
+  const componentSet = new Set(componentNames.map((n) => n.trim()).filter(Boolean));
+  const componentLower = new Set(componentNames.map((n) => n.trim().toLowerCase()));
+
+  const declared = new Set<string>();
+  const used = new Set<string>();
+
+  const idRegex = /\b([a-zA-Z_$][a-zA-Z0-9_$]*)\b/g;
+
+  // Declared: const/let/var name =, function name(, and destructuring const { a, b } / const [ a, b ]
+  const declPatterns = [
+    /\b(?:const|let|var)\s+(\w+)\s*[=\[{]/g,
+    /\bfunction\s+(\w+)\s*\(/g,
+    /\b(?:const|let|var)\s*\{([^}]+)\}\s*=/g,
+    /\b(?:const|let|var)\s*\[([^\]]+)\]\s*=/g,
+  ];
+  for (const re of declPatterns) {
+    let m;
+    const r = new RegExp(re.source, re.flags);
+    while ((m = r.exec(fullScript)) !== null) {
+      if (m[1] !== undefined) {
+        if (m[1].includes(',')) {
+          m[1].split(',').forEach((s: string) => {
+            const id = (s.split('=')[0].trim().replace(/[:{}]/g, '').trim() || '').trim();
+            if (id && !id.startsWith('...')) declared.add(id);
+          });
+        } else {
+          declared.add(m[1]);
+        }
+      }
+    }
+  }
+  // Destructuring: extract identifiers from { a, b, c } and [ a, b ]
+  const destrObj = fullScript.matchAll(/\b(?:const|let|var)\s*\{([^}]+)\}\s*=/g);
+  for (const d of destrObj) {
+    d[1].split(',').forEach((s: string) => {
+      const id = (s.split(':')[0].split('=')[0].trim().replace(/[{}]/g, '') || '').trim();
+      if (id && !id.startsWith('...')) declared.add(id);
+    });
+  }
+  const destrArr = fullScript.matchAll(/\b(?:const|let|var)\s*\[([^\]]+)\]\s*=/g);
+  for (const d of destrArr) {
+    d[1].split(',').forEach((s: string) => {
+      const id = (s.split('=')[0].trim().replace(/[\[\]]/g, '') || '').trim();
+      if (id && !id.startsWith('...')) declared.add(id);
+    });
+  }
+
+  let tok;
+  while ((tok = idRegex.exec(fullScript)) !== null) {
+    used.add(tok[1]);
+  }
+
+  const needsFallback: string[] = [];
+  const seen = new Set<string>();
+  for (const id of used) {
+    if (seen.has(id)) continue;
+    if (declared.has(id)) continue;
+    if (PREVIEW_KNOWN_GLOBALS.has(id)) continue;
+    if (componentSet.has(id) || componentLower.has(id.toLowerCase())) continue;
+    if (id.length < 2) continue;
+    seen.add(id);
+    needsFallback.push(id);
+  }
+  return needsFallback.sort();
+}
+
+const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, prompt, onClose, isModal = false, className }: WebsitePreviewProps) => {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
@@ -47,6 +148,105 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, on
           if (!doc) return;
           
           let content = '';
+
+          // Escape so generated code never breaks our template literals. For HTML (title/style/body) use \` → one backtick in output.
+          const escapeForEmbed = (s: string) => String(s).replace(/\\/g, '\\\\').replace(/`/g, '\\`');
+          // Placeholder for backticks in script content; restored to real ` before doc.write so Babel sees valid template literals.
+          // Only escape backticks — template interpolation inserts values as-is, so do NOT double backslashes or \' becomes \\' and breaks parsing (e.g. "Queen's Gambit").
+          const SCRIPT_BT = '__WEBPREVIEW_BACKTICK__';
+          const escapeForEmbedInScript = (s: string) => String(s).replace(/`/g, SCRIPT_BT);
+          const escapeBackslashOnly = (s: string) => String(s).replace(/\\/g, '\\\\');
+
+          // Rewrite JSX attribute template literals to string concatenation so we never emit backticks (avoids Babel/Unicode escape issues). e.g. className={`header__nav ${x}`} → className={'header__nav ' + (x)}
+          const transformJsxAttributeTemplateLiterals = (code: string): string => {
+            // Match {\`...\`} or {\`...\`} with [\s\S]*? to allow newlines; run in loop to catch all occurrences
+            const re = /\{\s*`([\s\S]*?)`\s*\}/g;
+            let prev = '';
+            while (prev !== code) {
+              prev = code;
+              code = code.replace(re, (match, content) => {
+                if (!content.includes('${')) return match;
+                const parts: { type: 'str'; value: string } | { type: 'expr'; value: string }[] = [];
+                let rest = content;
+                while (rest.length > 0) {
+                  const i = rest.indexOf('${');
+                  if (i === -1) {
+                    if (rest.length > 0) parts.push({ type: 'str', value: rest });
+                    break;
+                  }
+                  if (i > 0) parts.push({ type: 'str', value: rest.slice(0, i) });
+                  let depth = 0;
+                  let j = i + 2;
+                  for (; j < rest.length; j++) {
+                    const c = rest[j];
+                    if (c === '{') depth++;
+                    else if (c === '}') {
+                      if (depth === 0) break;
+                      depth--;
+                    }
+                  }
+                  parts.push({ type: 'expr', value: rest.slice(i + 2, j).trim() });
+                  rest = rest.slice(j + 1);
+                }
+                let out = '{';
+                parts.forEach((p, idx) => {
+                  if (p.type === 'str') {
+                    const escaped = p.value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+                    out += "'" + escaped + "'";
+                  } else {
+                    out += '(' + p.value + ')';
+                  }
+                  if (idx < parts.length - 1) out += ' + ';
+                });
+                out += '}';
+                return out;
+              });
+            }
+            return code;
+          };
+
+          // Normalize over-escaped apostrophes in string literals so Babel never sees \\' or \\\\' (e.g. "Queen's Gambit"). One place that fixes all sources.
+          const normalizeEscapedQuotes = (code: string): string => {
+            if (!code || typeof code !== 'string') return code;
+            return code.replace(/(\\)+'/g, "\\'"); // \', \\', \\\'... → exactly \'
+          };
+
+          // Remove one top-level "function App() { ... }" so we don't redeclare App when componentDefinitions already has "const App = (function() {...})();"
+          const stripTopLevelFunctionApp = (code: string): string => {
+            const match = code.match(/\bfunction\s+App\s*\([^)]*\)\s*\{/);
+            if (!match) return code;
+            const start = code.indexOf(match[0]);
+            let depth = 1;
+            let i = start + match[0].length;
+            while (i < code.length && depth > 0) {
+              const c = code[i];
+              if (c === '{' && code[i - 1] !== '\\') depth++;
+              else if (c === '}' && code[i - 1] !== '\\') depth--;
+              i++;
+            }
+            const end = depth === 0 ? i : code.length;
+            return (code.slice(0, start).trimEnd() + '\n\n' + code.slice(end).trimStart()).trim();
+          };
+
+          // Remove misplaced </> (and optional )) that appears between two closing tags so Babel doesn't throw "Expected corresponding JSX closing tag for <main>".
+          const fixMisplacedFragmentClose = (code: string): string => {
+            if (!code || typeof code !== 'string') return code;
+            // </tag></>) newline </otherTag> → </tag> newline </otherTag> (stray </> and ) removed; ); will appear later)
+            return code.replace(/(<\/\w+>)<\/>\)\s*(\n\s*)(<\/\w+>)/g, '$1$2$3');
+          };
+
+          // Fix "Invalid left-hand side in assignment": !x = {} / !x = [] → !x; x = {}.property → (x || {}).property
+          // Fix AI typo in destructuring: product = {}s, → product = {}, (stray letter after {} or [] before , ) } or ])
+          const sanitizeInvalidAssignment = (code: string): string => {
+            if (!code || typeof code !== 'string') return code;
+            return code
+              .replace(/!\s*(\w+)\s*=\s*\{\s*\}/g, '!$1')
+              .replace(/!\s*(\w+)\s*=\s*\[\s*\]/g, '!$1')
+              .replace(/(\w+)\s*=\s*\{\s*\}\s*\./g, '($1 || {}).')
+              .replace(/(\w+)\s*=\s*\[\s*\]\s*\./g, '($1 || []).')
+              .replace(/=\s*\{\s*\}\s*([a-zA-Z])(?=\s*[,)\}\]])/g, '= {} ')
+              .replace(/=\s*\[\s*\]\s*([a-zA-Z])(?=\s*[,)\}\]])/g, '= [] ');
+          };
           
           // Check if we have component-based structure
           if (components && components.length > 0) {
@@ -73,7 +273,11 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, on
               const processedComponents = components
                 .filter(c => c.language === 'jsx' || c.language === 'js' || c.language === 'tsx' || (!c.language && (/\\.(jsx|tsx)$/.test(c.path || '') || (c.code && (c.code.includes('from \'react\'') || c.code.includes('className'))))))
                 .map(c => {
+                  // ALL transforms BEFORE any escaping (template literals → concat, assignment fixes)
                   let code = sanitizeDollarInJsx(c.code);
+                  code = transformJsxAttributeTemplateLiterals(code);
+                  code = sanitizeInvalidAssignment(code);
+                  code = wrapAdjacentJsxInFragment(code);
                   
                   // Remove import statements (we'll provide React and hooks in preamble - do NOT re-declare here to avoid "already been declared")
                   code = code.replace(/import\s+React(?:\s*,\s*\{[^}]*\})?\s+from\s+['"]react['"];?\s*/g, '');
@@ -148,7 +352,8 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, on
                   const fnDecl = code.match(/function\s+(\w+)\s*\(/);
                   const constDecl = code.match(/const\s+(\w+)\s*=/);
                   const actualName = fnDecl?.[1] ?? constDecl?.[1];
-                  if (actualName && actualName !== componentName) {
+                  const definesComponent = fnDecl != null || (constDecl != null && /(?:=>|function|createElement|<\/?\w+)/.test(code));
+                  if (actualName && actualName !== componentName && definesComponent) {
                     code = code.replace(new RegExp(`\\bfunction\\s+${actualName}\\s*\\(`, 'g'), `function ${componentName}(`);
                     code = code.replace(new RegExp(`\\bconst\\s+${actualName}\\s*=`, 'g'), `const ${componentName}=`);
                   }
@@ -161,8 +366,11 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, on
               let rootElement = 'app';
               
               if (mainJsx) {
-                // Process mainJsx - remove imports and convert to inline code
+                // Process mainJsx - transforms first, then import stripping, then one escape at the end
                 let processedMain = sanitizeDollarInJsx(mainJsx);
+                processedMain = transformJsxAttributeTemplateLiterals(processedMain);
+                processedMain = sanitizeInvalidAssignment(processedMain);
+                processedMain = wrapAdjacentJsxInFragment(processedMain);
                 const componentNamesForImports = components
                   .filter(c => c.language === 'jsx' || c.language === 'js' || c.language === 'tsx')
                   .map(c => c.name.replace(/\s+/g, ''));
@@ -180,15 +388,12 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, on
                 processedMain = processedMain.replace(/import\s+ReactDOM\s+from\s+['"]react-dom['"];?\s*/gm, '');
                 // Pattern: import { useState } from 'react';
                 processedMain = processedMain.replace(/import\s+\{[^}]+\}\s+from\s+['"][^'"]+['"];?\s*/gm, '');
-                const previewDataNames = ['movieData', 'products', 'productData', 'items', 'listData', 'movies', 'posts', 'courses'];
-                // Pattern: import X from '...' - if X is a component, remove; else define X so App doesn't throw (e.g. movieData, products)
+                // Pattern: import X from '...' - if X is a component, remove; else define so App doesn't throw (fallback will define any used-but-not-declared)
                 processedMain = processedMain.replace(/import\s+(\w+)\s+from\s+['"][^'"]+['"];?\s*/gm, (_, name) => {
                   if (isComponentName(name)) return '';
-                  if (previewDataNames.includes(name)) return ''; // defined by fallback at top of script
                   return `const ${name} = [];`;
                 });
                 // Pattern: import { a, b } from '...' (named non-React imports - define so not undefined)
-                // Do NOT emit const X = [] for component names - they are declared by componentDefinitions below
                 processedMain = processedMain.replace(/import\s+\{([^}]+)\}\s+from\s+['"][^'"]+['"];?\s*/gm, (_, namesStr) => {
                   const bindings = namesStr.split(',').map((s: string) => {
                     const t = s.trim();
@@ -207,12 +412,12 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, on
                 processedMain = processedMain.replace(/import\s+['"][^'"]+['"];?\s*/gm, '');
                 // Final catch-all: any remaining import (default binding) - define so variable exists
                 processedMain = processedMain.replace(/import\s+(\w+)\s+from\s+[^;]+;?\s*/gm, (match, name) => {
-                  if (isComponentName(name) || previewDataNames.includes(name)) return '';
+                  if (isComponentName(name)) return '';
                   return `const ${name} = [];`;
                 });
                 // Strip any leftover import line but define default binding so we don't leave refs undefined
                 processedMain = processedMain.replace(/^import\s+(\w+)\s+from\s+.*$/gm, (match, name) => {
-                  if (isComponentName(name) || previewDataNames.includes(name)) return '';
+                  if (isComponentName(name)) return '';
                   return `const ${name} = [];`;
                 });
                 processedMain = processedMain.replace(/^import\s+.*$/gm, '');
@@ -317,12 +522,16 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, on
                   }
                 }
                 
+                // Wrap root render in error boundary so render errors (e.g. invalid element type) show a friendly message
+                processedMain = processedMain.replace(/\.render\s*\(\s*<\s*App\s*\/?\s*>\s*\)\s*(,\s*[^)]+)?\s*\)/g, (_, rest) =>
+                  '.render(React.createElement(PreviewErrorBoundary, null, React.createElement(App, null))' + (rest ? rest + ')' : ')'));
+
                 // Debug: log processed main to spot duplicate declarations
                 if (import.meta.env?.DEV) {
                   console.log('[WebsitePreview] Processed mainJsx (first 500):', processedMain.substring(0, 500));
                 }
 
-                appCode = processedMain;
+                appCode = escapeForEmbedInScript(processedMain);
               } else {
                 // Create App component from individual components
                 const componentNames = components
@@ -340,9 +549,9 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, on
                   
                   var rootEl = document.getElementById('${rootElement}');
                   if (rootEl && typeof ReactDOM.createRoot === 'function') {
-                    ReactDOM.createRoot(rootEl).render(<App />);
+                    ReactDOM.createRoot(rootEl).render(<PreviewErrorBoundary><App /></PreviewErrorBoundary>);
                   } else if (rootEl) {
-                    ReactDOM.render(<App />, rootEl);
+                    ReactDOM.render(<PreviewErrorBoundary><App /></PreviewErrorBoundary>, rootEl);
                   }
                 `;
               }
@@ -351,18 +560,72 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, on
               const reactComponentNames = components
                 .filter(c => c.language === 'jsx' || c.language === 'js' || c.language === 'tsx' || (!c.language && (/\\.(jsx|tsx)$/.test(c.path || '') || (c.code && (c.code.includes('from \'react\'') || c.code.includes('className'))))))
                 .map(c => c.name.replace(/\s+/g, ''));
-              // Wrap each component in its own IIFE so identifiers (PlayIcon, etc.) don't conflict across components
-              const componentDefinitions = processedComponents.map((code, i) => {
+              // Escape once for embedding (code is already fully transformed above)
+              // If a "component" chunk doesn't define that component (e.g. data-only file like const App = [] or const initialProducts = []), use side-effect IIFE only so we don't declare const App and then redeclare with function App() from mainJsx
+              let componentDefinitions = processedComponents.map((code, i) => {
                 const componentName = reactComponentNames[i] || 'Component' + i;
-                return `const ${componentName} = (function() {\n${code}\nreturn typeof ${componentName} !== 'undefined' ? ${componentName} : (function ${componentName}() { return null; });\n})();`;
+                const hasFunctionDecl = new RegExp(`\\bfunction\\s+${componentName}\\s*\\(`).test(code);
+                const hasComponentConst = new RegExp(`\\bconst\\s+${componentName}\\s*=\\s*(?:function|\\([^)]*\\)\\s*=>)`).test(code);
+                const definesThisComponent = hasFunctionDecl || hasComponentConst;
+                if (definesThisComponent) {
+                  return `const ${componentName} = (function() {\n${escapeForEmbedInScript(code)}\nreturn typeof ${componentName} === 'function' ? ${componentName} : (function() { return null; });\n})();`;
+                }
+                return `(function() {\n${escapeForEmbedInScript(code)}\n})();`;
               }).join('\n\n');
-              // Only add fallback declarations for names not already declared in user code (avoids "Identifier has already been declared")
+              // If a component chunk already defined App (const App = (function() {...})();), remove duplicate "function App() { ... }" from mainJsx so we don't redeclare
+              if (componentDefinitions.includes('const App = (function()') && appCode.includes('function App')) {
+                appCode = stripTopLevelFunctionApp(appCode);
+              }
+              if (import.meta.env?.DEV && processedComponents.length > 0) {
+                const firstComponent = processedComponents[0];
+                const fullScript = componentDefinitions + '\n\n' + appCode;
+                console.log('[SANITIZE CHECK] Component after transforms:', firstComponent.substring(0, 200));
+                console.log('[SANITIZE CHECK] Looking for patterns:', {
+                  hasBacktickInBraces: /\{[^}]*`[^}]*\}/.test(firstComponent),
+                  hasEqualsS: /=\s*\{\s*\}\s*s/.test(fullScript),
+                });
+              }
+              // Dynamically find identifiers that are used but not declared (any data variable the generated code references)
               const reactUserCodeStr = componentDefinitions + '\n\n' + appCode;
-              const previewDataNamesList = ['movieData', 'products', 'productData', 'items', 'listData', 'movies', 'posts', 'courses'];
-              const reactFallbackLines = previewDataNamesList
-                .filter(name => !new RegExp(`\\b(const|let|var)\\s+${name}\\b`).test(reactUserCodeStr))
-                .map(name => `if (typeof ${name} === 'undefined') { var ${name} = []; }`)
+              const reactComponentNamesList = components
+                .filter(c => c.language === 'jsx' || c.language === 'js' || c.language === 'tsx')
+                .map(c => c.name.replace(/\s+/g, ''));
+              let usedButUndeclared = getUsedButUndeclaredIdentifiers(reactUserCodeStr, reactComponentNamesList);
+              // Safety net: common data names that generated code often uses as globals - add fallback only when they appear in the script AND are not already declared (avoid "already been declared" when script has e.g. const mockProducts = [])
+              const commonDataVars = ['products', 'initialProducts', 'items', 'cart', 'data', 'services', 'mockProducts', 'productList'];
+              const usedSet = new Set(usedButUndeclared);
+              const isDeclaredInScript = (name: string) => new RegExp('\\b(?:const|let|var)\\s+' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*[=\\[{]').test(reactUserCodeStr);
+              for (const name of commonDataVars) {
+                if (!usedSet.has(name) && new RegExp('\\b' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b').test(reactUserCodeStr) && !isDeclaredInScript(name)) {
+                  usedSet.add(name);
+                }
+              }
+              usedButUndeclared = Array.from(usedSet);
+              const reactFallbackLines = usedButUndeclared
+                .map(name => {
+                  // PascalCase names are used as components (<ProductCard />); must be a function, not []
+                  if (/^[A-Z]/.test(name)) {
+                    return `if (typeof ${name} === 'undefined') { var ${name} = function ${name}() { return null; }; }`;
+                  }
+                  return `if (typeof ${name} === 'undefined') { var ${name} = []; }`;
+                })
                 .join('\n        ');
+
+              // React error boundary: catches render errors (e.g. invalid element type) and shows a friendly message
+              const previewErrorBoundaryScript = `class PreviewErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { hasError: false, error: null }; }
+  static getDerivedStateFromError(error) { return { hasError: true, error: error }; }
+  render() {
+    if (this.state.hasError) {
+      return React.createElement('div', { style: { padding: '20px', color: '#721c24', background: '#f8d7da', border: '1px solid #f5c6cb', borderRadius: '4px', fontFamily: 'monospace', margin: '20px' } },
+        React.createElement('h3', { style: { marginTop: 0 } }, 'Preview error'),
+        React.createElement('p', null, this.state.error && this.state.error.message),
+        this.state.error && this.state.error.stack ? React.createElement('pre', { style: { fontSize: '12px', overflow: 'auto', whiteSpace: 'pre-wrap' } }, this.state.error.stack) : null
+      );
+    }
+    return this.props.children;
+  }
+};`;
 
               // Debug: before doc.write, verify each component appears once as IIFE, not as placeholder
               if (import.meta.env?.DEV) {
@@ -382,11 +645,11 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, on
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${websiteName || 'Generated Website'}</title>
+  <title>${escapeForEmbed(websiteName || 'Generated Website')}</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif; }
-    ${styleCss}
+    ${escapeForEmbed(styleCss)}
   </style>
 </head>
 <body>
@@ -409,9 +672,13 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, on
         const { useState, useEffect, useRef, useCallback, useMemo, useContext } = React;
         
         // Define common data variables only if user code does not declare them (avoids "already been declared" errors)
-        ${reactFallbackLines}
+        ${escapeBackslashOnly(reactFallbackLines)}
+        
+        // React error boundary: catches render errors (e.g. invalid element type) so client sees a friendly message
+        ${escapeBackslashOnly(previewErrorBoundaryScript)}
         
         // Each component in its own scope so duplicate names (PlayIcon, etc.) across files don't conflict
+        // (componentDefinitions and appCode are already escaped via escapeForEmbedInScript — do NOT double-escape or apostrophes like Queen's become \\\\' and break parsing)
         ${componentDefinitions}
         
         // App initialization
@@ -582,13 +849,13 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, on
   return element;
 }`;
 
-            // Build complete HTML
+            // Build complete HTML (escape generated code so backticks don't break our template)
             content = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${websiteName || 'Generated Website'}</title>
+  <title>${escapeForEmbed(websiteName || 'Generated Website')}</title>
   <style>
     * {
       margin: 0;
@@ -598,7 +865,7 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, on
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
     }
-    ${styleCss}
+    ${escapeForEmbed(styleCss)}
   </style>
 </head>
 <body>
@@ -607,12 +874,10 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, on
     ${jsxHelper}
     
     ${componentFunctions.map(c => {
-      // Ensure components import jsx if they use it
       let code = c.code;
-      // Remove import statements for jsx since we're providing it globally
       code = code.replace(/import\s+\{[^}]*jsx[^}]*\}\s+from\s+['"][^'"]+['"];?\s*/g, '');
       code = code.replace(/import\s+jsx\s+from\s+['"][^'"]+['"];?\s*/g, '');
-      return code;
+      return escapeForEmbedInScript(code);
     }).join('\n\n')}
     
     ${executionCode}
@@ -627,19 +892,18 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, on
             if (hasFullHtml && html) {
             content = html;
             if (!html.includes('<style>') && css) {
-              content = content.replace('</head>', `<style>${css}</style></head>`);
+              content = content.replace('</head>', `<style>${escapeForEmbed(css)}</style></head>`);
             }
             if (!html.includes('<script>') && js) {
-              content = content.replace('</body>', `<script>${js}</script></body>`);
+              content = content.replace('</body>', `<script>${escapeForEmbedInScript(js)}</script></body>`);
             }
           } else {
-            content = `
-            <!DOCTYPE html>
+            content = `<!DOCTYPE html>
             <html lang="en">
             <head>
               <meta charset="UTF-8">
               <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              <title>${websiteName || 'Generated Website'}</title>
+              <title>${escapeForEmbed(websiteName || 'Generated Website')}</title>
               <style>
                 * {
                   box-sizing: border-box;
@@ -649,13 +913,13 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, on
                   padding: 0;
                   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
                 }
-                  ${css || ''}
+                  ${escapeForEmbed(css || '')}
               </style>
             </head>
             <body>
-                ${html || ''}
+                ${escapeForEmbed(html || '')}
               <script>
-                  ${js || ''}
+                  ${escapeForEmbedInScript(js || '')}
               </script>
             </body>
             </html>
@@ -663,7 +927,22 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, on
             }
           }
           
-          // Replace imgur URLs with placeholders sized by context (hero, thumbnail, product, etc.)
+          // Log image URLs in preview (before any replacements) so you can trace the flow
+          if (import.meta.env?.DEV) {
+            const imageUrlRegex = /https?:\/\/(?:images\.)?unsplash\.com\/[^\s"'<>)\]]+|https?:\/\/(?:i\.)?imgur\.com\/[^\s"'<>)\]]+|https?:\/\/picsum\.photos\/[^\s"'<>)\]]+/gi;
+            const allImgUrls = content.match(imageUrlRegex) || [];
+            const uniqueUrls = [...new Set(allImgUrls)];
+            console.log('[IMAGE] URLs in preview (before imgur replace):', uniqueUrls.length, uniqueUrls.slice(0, 15));
+            if (uniqueUrls.length > 0) {
+              uniqueUrls.forEach((u, i) => console.log(`  [IMAGE] ${i + 1}. ${u.substring(0, 80)}${u.length > 80 ? '...' : ''}`));
+            }
+          }
+
+          // Unsplash placeholder (single stable image, resized via params) so preview uses Unsplash not Picsum
+          const unsplashPlaceholder = (w: number, h: number) =>
+            `https://images.unsplash.com/photo-1544367567-0f2fcb009e0b?w=${Math.min(1200, w)}&h=${Math.min(800, h)}&fit=crop`;
+          // Replace imgur URLs with Unsplash placeholders sized by context
+          let imgurReplaceCount = 0;
           content = content.replace(/https?:\/\/(?:i\.)?imgur\.com\/[^\s"'<>)\]]+/gi, (match, offset) => {
             const idx = typeof offset === 'number' ? offset : content.indexOf(match);
             const start = Math.max(0, idx - 500);
@@ -676,7 +955,119 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, on
             const heightMatch = ctx.match(/height\s*[=:]\s*["']?(\d+)/);
             if (widthMatch) w = Math.min(1200, Math.max(48, parseInt(widthMatch[1], 10)));
             if (heightMatch) h = Math.min(800, Math.max(48, parseInt(heightMatch[1], 10)));
-            return `https://picsum.photos/${w}/${h}`;
+            const newUrl = unsplashPlaceholder(w, h);
+            if (import.meta.env?.DEV) {
+              imgurReplaceCount++;
+              console.log(`[IMAGE] Imgur → Unsplash fallback #${imgurReplaceCount}:`, match.substring(0, 60) + '...', '→', newUrl);
+            }
+            return newUrl;
+          });
+          // Replace Picsum URLs (AI often generates these) with Unsplash so preview is consistently Unsplash
+          content = content.replace(/https?:\/\/picsum\.photos\/[^\s"'<>)\]]+/gi, (match) => {
+            const sizeMatch = match.match(/picsum\.photos\/(?:seed\/[^/]+\/)?(\d+)\/(\d+)/);
+            const w = sizeMatch ? parseInt(sizeMatch[1], 10) : 400;
+            const h = sizeMatch ? parseInt(sizeMatch[2], 10) : 300;
+            return unsplashPlaceholder(w, h);
+          });
+          if (import.meta.env?.DEV && imgurReplaceCount > 0) {
+            console.log('[IMAGE] Total imgur replacements:', imgurReplaceCount);
+          }
+
+          // Params for preview fallback: backend returns a HEAD-checked Unsplash URL (no 404)
+          const placeholderParamsJson = JSON.stringify({
+            apiBase: (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) || 'http://localhost:3000',
+            websiteName: websiteName || '',
+            prompt: prompt || '',
+          });
+          const placeholderParamsEscaped = placeholderParamsJson.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/</g, '\\u003c');
+          // Inject script: replace broken images with a validated Unsplash URL from our API (HEAD-checked, no 404)
+          const imageFallbackScript = `<script>
+window.__PREVIEW_PARAMS__ = JSON.parse('${placeholderParamsEscaped}');
+(function() {
+  function fallback(e) {
+    var img = e && e.target ? e.target : e;
+    if (!img || img.tagName !== 'IMG' || img.dataset.fallbackDone) return;
+    var oldSrc = img.src || '';
+    img.dataset.fallbackDone = '1';
+    img.onerror = null;
+    var w = (img.getAttribute('width') && parseInt(img.getAttribute('width'), 10)) || 400;
+    var h = (img.getAttribute('height') && parseInt(img.getAttribute('height'), 10)) || 300;
+    if (w > 1200) w = 1200; if (h > 800) h = 800; if (w < 48) w = 400; if (h < 48) h = 300;
+    var params = window.__PREVIEW_PARAMS__ || {};
+    var apiBase = (params.apiBase || '').replace(/\\/$/, '');
+    var q = '?websiteName=' + encodeURIComponent(params.websiteName || '') + '&prompt=' + encodeURIComponent(params.prompt || '') + '&width=' + w + '&height=' + h;
+    fetch(apiBase + '/website/placeholder-image' + q).then(function(r) { return r.ok ? r.json() : null; }).then(function(data) {
+      if (data && data.url) {
+        img.src = data.url;
+        try { if (window.parent && window.parent.console) window.parent.console.log('[IMAGE FALLBACK] Replaced with validated Unsplash (no 404):', oldSrc.substring(0, 50) + '...', '→', data.url.substring(0, 55) + '...'); } catch (err) {}
+      }
+    }).catch(function() {
+      try { if (window.parent && window.parent.console) window.parent.console.warn('[IMAGE FALLBACK] API failed for placeholder; image left broken (Unsplash only).'); } catch (err) {}
+    });
+  }
+  function attach() {
+    try {
+      var imgs = document.querySelectorAll('img');
+      imgs.forEach(function(img) {
+        if (img.dataset.fallbackDone) return;
+        img.addEventListener('error', fallback);
+        if (img.complete && img.naturalWidth === 0) fallback({ target: img });
+      });
+    } catch (err) {}
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', attach);
+  else attach();
+  setTimeout(attach, 1500);
+  setTimeout(attach, 4000);
+})();
+</script>`;
+          content = content.replace('</body>', imageFallbackScript + '\n</body>');
+          if (import.meta.env?.DEV) {
+            console.log('[IMAGE] Fallback script injected: broken images will be replaced with validated Unsplash only (API HEAD-checked, no 404).');
+          }
+
+          // Safety: convert any remaining {__WEBPREVIEW_BACKTICK__...${expr}...__WEBPREVIEW_BACKTICK__} to concatenation so we never restore backticks for template literals (fixes "Unterminated template")
+          content = content.replace(/\{\s*__WEBPREVIEW_BACKTICK__([\s\S]*?)__WEBPREVIEW_BACKTICK__\s*\}/g, (_match, inner) => {
+            if (!inner.includes('${')) return _match;
+            const parts: { type: 'str'; value: string } | { type: 'expr'; value: string }[] = [];
+            let rest = inner;
+            while (rest.length > 0) {
+              const i = rest.indexOf('${');
+              if (i === -1) {
+                if (rest.length > 0) parts.push({ type: 'str', value: rest });
+                break;
+              }
+              if (i > 0) parts.push({ type: 'str', value: rest.slice(0, i) });
+              let depth = 0, j = i + 2;
+              for (; j < rest.length; j++) {
+                const c = rest[j];
+                if (c === '{') depth++;
+                else if (c === '}') { if (depth === 0) break; depth--; }
+              }
+              parts.push({ type: 'expr', value: rest.slice(i + 2, j).trim() });
+              rest = rest.slice(j + 1);
+            }
+            let out = '{';
+            parts.forEach((p, idx) => {
+              if (p.type === 'str') {
+                const escaped = p.value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+                out += "'" + escaped + "'";
+              } else {
+                out += '(' + p.value + ')';
+              }
+              if (idx < parts.length - 1) out += ' + ';
+            });
+            out += '}';
+            return out;
+          });
+          // Restore backtick placeholder for any remaining uses (non-template-literal backticks)
+          content = content.replace(/__WEBPREVIEW_BACKTICK__/g, '`');
+
+          // ONE final safety pass on the complete HTML: normalize quotes, fix JSX, transform, sanitize each script body (catches all sources)
+          content = content.replace(/<script([^>]*)>([\s\S]*?)<\/script>/gi, (_m, attrs, body) => {
+            const normalized = normalizeEscapedQuotes(body);
+            const fixedJsx = fixMisplacedFragmentClose(normalized);
+            return '<script' + attrs + '>' + sanitizeInvalidAssignment(transformJsxAttributeTemplateLiterals(fixedJsx)) + '</script>';
           });
           
           doc.open();
@@ -697,7 +1088,7 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, on
         setTimeout(loadContent, 100);
       }
     }
-  }, [html, css, js, components, viteConfig, websiteName]);
+  }, [html, css, js, components, viteConfig, websiteName, prompt]);
 
   // Load content when html, css, js, or websiteName changes
   useEffect(() => {

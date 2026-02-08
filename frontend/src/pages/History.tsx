@@ -323,6 +323,7 @@ const History = () => {
                               components={website.components}
                               viteConfig={website.viteConfig}
                         websiteName={website.websiteName}
+                        prompt={website.prompt}
                               className="min-h-[500px]"
                       />
                           </div>
@@ -729,6 +730,7 @@ const History = () => {
             components={previewWebsite.components}
             viteConfig={previewWebsite.viteConfig}
             websiteName={previewWebsite.websiteName}
+            prompt={previewWebsite.prompt}
             isModal={true}
             onClose={() => setPreviewWebsite(null)}
           />

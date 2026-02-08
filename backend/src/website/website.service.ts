@@ -7,6 +7,7 @@ import { ObjectId } from 'mongodb';
 import OpenAI from 'openai';
 import * as fs from 'fs';
 import * as path from 'path';
+import axios from 'axios';
 
 @Injectable()
 export class WebsiteService {
@@ -83,6 +84,12 @@ COMPONENT ARCHITECTURE REQUIREMENTS:
 - Components should accept props for customization
 - Separate concerns: one component per file
 - Use React hooks (useState, useEffect) when needed for interactivity
+
+JSX ATTRIBUTES - NO TEMPLATE LITERALS:
+- In JSX attributes, NEVER use template literals (backticks). Always use string concatenation instead.
+- BAD: className={\`header__nav \${isMenuOpen ? 'is-open' : ''}\`}
+- GOOD: className={'header__nav ' + (isMenuOpen ? 'is-open' : '')}
+- This applies to className, style, and any other attribute that takes a dynamic string.
 
 VITE PROJECT STRUCTURE:
 - index.html: Root HTML file that loads /src/main.jsx as ES module
@@ -235,7 +242,9 @@ export default function Header() {
 }
 \`\`\`
 
-DO NOT use document.createElement, innerHTML, or jsx() helper. ONLY use React JSX syntax.`;
+DO NOT use document.createElement, innerHTML, or jsx() helper. ONLY use React JSX syntax.
+
+For dynamic class names use: className={'base-class ' + (condition ? 'active' : '')} never className={\`base-class \${expr}\`}.`;
 
       // Preserve the full user prompt - enhance it but keep all details
       const userPrompt = this.enhanceUserPrompt(prompt);
@@ -243,65 +252,109 @@ DO NOT use document.createElement, innerHTML, or jsx() helper. ONLY use React JS
       console.log('WebsiteService.generateWebsite - Using model:', model);
       console.log('WebsiteService.generateWebsite - Original prompt length:', prompt.length);
       console.log('WebsiteService.generateWebsite - Enhanced prompt length:', userPrompt.length);
-      
-      // Call v0 API to generate website code
-      // v0 API is optimized for generating production-ready React components
-      const completion = await this.openai.chat.completions.create({
-        model: model,
-        messages: [
-          {
-            role: 'system',
-            content: systemPrompt,
-          },
-          {
-            role: 'user',
-            content: userPrompt,
-          },
-        ],
-        temperature: 0.7, // Balanced creativity for production-quality designs
-        max_tokens: 32768, // Large enough for full component JSON; 16k was truncating (~46k char responses)
-      });
 
-      const responseContent = completion.choices[0]?.message?.content || '{}';
-      console.log('WebsiteService.generateWebsite - v0 API Response length:', responseContent.length, '| first 500 chars:', responseContent.substring(0, 500));
-      console.log('WebsiteService.generateWebsite - v0 API Response last 150 chars:', responseContent.substring(Math.max(0, responseContent.length - 150)));
-      
-      let websiteCode = this.parseV0Response(responseContent);
-      
-      if (!websiteCode) {
-        console.warn('WebsiteService.generateWebsite - All parse attempts failed, trying code extraction');
-        websiteCode = this.extractCodeFromResponse(responseContent);
+      const MAX_V0_ATTEMPTS = Number(process.env.V0_MAX_RETRIES) || 3;
+      const RETRY_DELAY_MS = 1500;
+      const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+      let responseContent: string = '{}';
+      let websiteCode: any = null;
+
+      for (let attempt = 1; attempt <= MAX_V0_ATTEMPTS; attempt++) {
+        console.log('WebsiteService.generateWebsite - v0 API attempt', attempt, 'of', MAX_V0_ATTEMPTS);
+
+        const completion = await this.openai.chat.completions.create({
+          model: model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+          temperature: 0.7,
+          max_tokens: 32768,
+        });
+
+        responseContent = completion.choices[0]?.message?.content || '{}';
+        console.log('WebsiteService.generateWebsite - v0 API Response length:', responseContent.length, '| first 500 chars:', responseContent.substring(0, 500));
+
+        if (this.isRefusalResponse(responseContent)) {
+          console.warn('WebsiteService.generateWebsite - v0 API refusal on attempt', attempt);
+          if (attempt < MAX_V0_ATTEMPTS) {
+            console.log('WebsiteService.generateWebsite - Retrying in', RETRY_DELAY_MS, 'ms...');
+            await delay(RETRY_DELAY_MS);
+            continue;
+          }
+          const msg = 'The AI declined to generate this website after ' + MAX_V0_ATTEMPTS + ' attempts. Try rephrasing your prompt (e.g. avoid sensitive topics, use clearer wording, or break the request into smaller steps).';
+          const err = new Error(msg) as Error & { status?: number };
+          err.status = 422;
+          throw err;
+        }
+
+        websiteCode = this.parseV0Response(responseContent);
+        if (!websiteCode) {
+          console.warn('WebsiteService.generateWebsite - Parse failed, trying code extraction');
+          websiteCode = this.extractCodeFromResponse(responseContent);
+        }
+        if (websiteCode?.files && Array.isArray(websiteCode.files)) {
+          websiteCode = this.convertV0FilesToStructure(websiteCode);
+        }
+
+        const hasValidCode =
+          (websiteCode?.components?.length > 0) ||
+          (websiteCode?.files?.length > 0) ||
+          (websiteCode?.html && websiteCode.html !== '<div>Generated Website</div>');
+        if (hasValidCode) {
+          console.log('WebsiteService.generateWebsite - Valid code received on attempt', attempt);
+          break;
+        }
+
+        console.warn('WebsiteService.generateWebsite - No valid code on attempt', attempt);
+        if (attempt < MAX_V0_ATTEMPTS) {
+          console.log('WebsiteService.generateWebsite - Retrying in', RETRY_DELAY_MS, 'ms...');
+          await delay(RETRY_DELAY_MS);
+          continue;
+        }
+        const err = new Error(
+          'The AI did not return valid website code after ' + MAX_V0_ATTEMPTS + ' attempts. Try rephrasing your prompt or simplifying the request.',
+        ) as Error & { status?: number };
+        err.status = 422;
+        throw err;
       }
 
-      // v0 API sometimes returns { files: [{ path, content }] } instead of { components, viteConfig }; normalize to our structure
-      if (websiteCode?.files && Array.isArray(websiteCode.files)) {
-        websiteCode = this.convertV0FilesToStructure(websiteCode);
-      }
-
-      // Sanitize JSX: ${expr} in JSX text is parsed by Babel as template literal start → "Unterminated template".
-      // Rewrite to {'$' + expr} so in-browser Babel sees valid JSX.
+      // Sanitize JSX and fix images: validate image URLs (HEAD), replace 404s with a relevant image (Unsplash by site theme, else Picsum), then replace imgur
+      const getPlaceholderUrl = await this.buildPlaceholderUrlGetter(websiteName || '', prompt);
+      const sanitizeCode = (raw: string) =>
+        this.sanitizeInvalidConditionAssignment(
+          this.sanitizeJsxDollarInterpolation(this.transformJsxAttributeTemplateLiterals(raw)),
+        );
       if (websiteCode?.components?.length) {
-        websiteCode.components = websiteCode.components.map((c: any) => ({
-          ...c,
-          code: this.replaceBrokenImageUrls(
-            this.sanitizeInvalidConditionAssignment(this.sanitizeJsxDollarInterpolation(c.code || '')),
-          ),
-        }));
+        for (let i = 0; i < websiteCode.components.length; i++) {
+          let code = sanitizeCode(websiteCode.components[i].code || '');
+          code = await this.validateAndReplaceBrokenImageUrls(code, getPlaceholderUrl);
+          code = this.replaceBrokenImageUrls(code);
+          websiteCode.components[i].code = this.wrapAdjacentJsxInFragment(code);
+        }
       }
       if (websiteCode?.viteConfig?.mainJsx) {
-        websiteCode.viteConfig.mainJsx = this.replaceBrokenImageUrls(
-          this.sanitizeInvalidConditionAssignment(this.sanitizeJsxDollarInterpolation(websiteCode.viteConfig.mainJsx)),
-        );
+        let main = sanitizeCode(websiteCode.viteConfig.mainJsx);
+        main = await this.validateAndReplaceBrokenImageUrls(main, getPlaceholderUrl);
+        main = this.replaceBrokenImageUrls(main);
+        websiteCode.viteConfig.mainJsx = this.wrapAdjacentJsxInFragment(main);
       }
       if (websiteCode?.viteConfig?.mainJs) {
-        websiteCode.viteConfig.mainJs = this.replaceBrokenImageUrls(
-          this.sanitizeInvalidConditionAssignment(this.sanitizeJsxDollarInterpolation(websiteCode.viteConfig.mainJs)),
-        );
+        let main = sanitizeCode(websiteCode.viteConfig.mainJs);
+        main = await this.validateAndReplaceBrokenImageUrls(main, getPlaceholderUrl);
+        main = this.replaceBrokenImageUrls(main);
+        websiteCode.viteConfig.mainJs = this.wrapAdjacentJsxInFragment(main);
       }
-      // Replace imgur URLs in legacy html/css/js so preview doesn't show broken images
-      if (websiteCode?.html) websiteCode.html = this.replaceBrokenImageUrls(websiteCode.html);
+      if (websiteCode?.html) {
+        let html = await this.validateAndReplaceBrokenImageUrls(websiteCode.html, getPlaceholderUrl);
+        websiteCode.html = this.replaceBrokenImageUrls(html);
+      }
       if (websiteCode?.css) websiteCode.css = this.replaceBrokenImageUrls(websiteCode.css);
-      if (websiteCode?.js) websiteCode.js = this.replaceBrokenImageUrls(websiteCode.js);
+      if (websiteCode?.js) {
+        let js = await this.validateAndReplaceBrokenImageUrls(websiteCode.js, getPlaceholderUrl);
+        websiteCode.js = this.replaceBrokenImageUrls(js);
+      }
 
       // Strip any placeholder "const ComponentName = [];" from mainJsx/mainJs so preview never sees duplicate declarations
       const componentNamesForStrip = (websiteCode?.components || []).map((c: any) => (c.name || '').replace(/\s+/g, ''));
@@ -347,7 +400,12 @@ DO NOT use document.createElement, innerHTML, or jsx() helper. ONLY use React JS
       });
       
       if (components.length === 0 && htmlCode === '<div>Generated Website</div>' && cssCode === 'body { margin: 0; padding: 0; }') {
-        console.error('WebsiteService.generateWebsite - WARNING: Using default placeholder code! v0 API may have failed.');
+        console.error('WebsiteService.generateWebsite - No valid code from v0 API; refusing to save placeholder.');
+        const err = new Error(
+          'The AI did not return valid website code. You may have hit a content limit or the request may have been refused. Try rephrasing your prompt or simplifying the request.',
+        ) as Error & { status?: number };
+        err.status = 422;
+        throw err;
       }
 
       // Save website to database
@@ -596,7 +654,221 @@ DESIGN (MANDATORY - PRODUCTION-READY):
   }
 
   /**
-   * Replace imgur.com (and similar) image URLs with reliable placeholder images
+   * Derive Unsplash search query from website name and prompt so fallback images match the site.
+   * Uses a topic map for common themes, then falls back to dynamic extraction from prompt/name so any niche works.
+   */
+  private deriveImageSearchQuery(websiteName?: string, prompt?: string): string {
+    const text = `${websiteName || ''} ${prompt || ''}`.toLowerCase();
+    const topicMap: Array<{ keywords: RegExp; query: string }> = [
+      { keywords: /\b(shoes?|sneakers?|kicks?|footwear|trainers?|boots|heels|sandals)\b/, query: 'sneakers shoes' },
+      { keywords: /\b(clothing|fashion|apparel|tshirt|t-shirt|dress|jacket|wear)\b/, query: 'fashion clothing' },
+      { keywords: /\b(food|restaurant|cafe|coffee|cuisine|meal)\b/, query: 'food restaurant' },
+      { keywords: /\b(tech|laptop|gadget|electronics|phone)\b/, query: 'technology laptop' },
+      { keywords: /\b(travel|mountain|hiking|nature|landscape)\b/, query: 'travel landscape' },
+      { keywords: /\b(fitness|gym|workout|sport)\b/, query: 'fitness gym' },
+      { keywords: /\b(book|reading|library)\b/, query: 'books' },
+      { keywords: /\b(jewelry|watch|accessories)\b/, query: 'jewelry accessories' },
+      { keywords: /\b(furniture|home|interior)\b/, query: 'furniture home' },
+      { keywords: /\b(beauty|cosmetics|skincare)\b/, query: 'beauty cosmetics' },
+    ];
+    for (const { keywords, query } of topicMap) {
+      if (keywords.test(text)) return query;
+    }
+    // Dynamic: extract meaningful words from prompt (any topic – yoga mats, pet food, bicycles, etc.)
+    const stopwords = new Set([
+      'create', 'build', 'website', 'make', 'for', 'the', 'an', 'a', 'my', 'with', 'and', 'that', 'this',
+      'site', 'page', 'design', 'modern', 'beautiful', 'responsive', 'ecommerce', 'store', 'shop', 'sell', 'selling',
+    ]);
+    const promptWords = (prompt || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length > 1 && !stopwords.has(w));
+    const fromPrompt = promptWords.slice(0, 5).join(' ').trim();
+    if (fromPrompt.length > 0) return fromPrompt;
+    // Fallback: website name as query (e.g. "ZenMats" → "zen mats", "KICKS" stays "kicks")
+    const name = (websiteName || '').trim().replace(/\s+/g, ' ').replace(/[^a-z0-9\s]/gi, '').toLowerCase();
+    if (name.length > 0) return name;
+    return 'product';
+  }
+
+  /**
+   * Fetch one relevant Unsplash image URL for the given search query (same theme as the site). Returns null if no key or API fail.
+   */
+  private async fetchRelevantUnsplashUrl(searchQuery: string, width: number, height: number): Promise<string | null> {
+    const key = process.env.UNSPLASH_ACCESS_KEY;
+    if (!key) return null;
+    try {
+      const res = await axios.get<{ results: Array<{ urls: { regular: string; raw?: string } }> }>(
+        'https://api.unsplash.com/search/photos',
+        {
+          params: { query: searchQuery, per_page: 1, client_id: key },
+          timeout: 5000,
+        },
+      );
+      const url = res.data?.results?.[0]?.urls?.regular || res.data?.results?.[0]?.urls?.raw;
+      if (!url) return null;
+      const sep = url.includes('?') ? '&' : '?';
+      return `${url}${sep}w=${width}&h=${height}&fit=crop`;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Return a single Unsplash image URL for the given site context, HEAD-checked so it does not 404.
+   * Used by the preview fallback: when an image fails in the iframe, the client calls this to get a validated Unsplash URL.
+   */
+  async getValidatedPlaceholderImage(
+    websiteName: string,
+    prompt: string,
+    width: number,
+    height: number,
+  ): Promise<string | null> {
+    const query = this.deriveImageSearchQuery(websiteName, prompt);
+    const key = process.env.UNSPLASH_ACCESS_KEY;
+    if (!key) return null;
+    try {
+      const res = await axios.get<{ results: Array<{ urls: { regular: string; raw?: string } }> }>(
+        'https://api.unsplash.com/search/photos',
+        {
+          params: { query, per_page: 5, client_id: key },
+          timeout: 5000,
+        },
+      );
+      const results = res.data?.results || [];
+      const w = Math.min(1200, Math.max(48, width));
+      const h = Math.min(800, Math.max(48, height));
+      for (const r of results) {
+        const base = r?.urls?.regular || r?.urls?.raw;
+        if (!base) continue;
+        const url = this.setUnsplashDimensions(base, w, h);
+        if (await this.isImageUrlOk(url)) {
+          console.log('[IMAGE] Validated placeholder (no 404):', url.substring(0, 60) + '...');
+          return url;
+        }
+      }
+      const first = results[0]?.urls?.regular || results[0]?.urls?.raw;
+      if (first) {
+        const url = this.setUnsplashDimensions(first, w, h);
+        console.log('[IMAGE] No HEAD-ok result; returning first Unsplash anyway:', url.substring(0, 60) + '...');
+        return url;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Check if an image URL returns 2xx (HEAD request). Used to replace 404s (e.g. broken Unsplash) with a relevant fallback.
+   */
+  private async isImageUrlOk(url: string): Promise<boolean> {
+    try {
+      const res = await axios.head(url, {
+        timeout: 4000,
+        maxRedirects: 3,
+        validateStatus: () => true,
+        headers: { 'User-Agent': 'WebGenius/1.0' },
+      });
+      return res.status >= 200 && res.status < 400;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Validate image URLs and replace 404/failed ones with a relevant fallback (Unsplash search by site theme, else Picsum).
+   */
+  private async validateAndReplaceBrokenImageUrls(
+    code: string,
+    getPlaceholderUrl: (width: number, height: number) => Promise<string>,
+  ): Promise<string> {
+    if (!code || typeof code !== 'string') return code;
+    const imageUrlRegex = /https?:\/\/[^\s"'<>)\]]+\.(?:jpg|jpeg|png|gif|webp)(?:\?[^\s"'<>)\]]*)?|https?:\/\/(?:images\.)?unsplash\.com\/[^\s"'<>)\]]+/gi;
+    const allMatches = code.match(imageUrlRegex) || [];
+    const unique = [...new Set(allMatches)];
+    const toReplace = new Set<string>();
+    for (const url of unique.slice(0, 25)) {
+      const ok = await this.isImageUrlOk(url);
+      const short = url.length > 60 ? url.substring(0, 60) + '...' : url;
+      if (ok) {
+        console.log('[IMAGE] URL OK:', short);
+      } else {
+        toReplace.add(url);
+        console.log('[IMAGE] URL BROKEN (will replace):', short);
+      }
+    }
+    if (toReplace.size === 0) return code;
+    const replacementSpecs: { width: number; height: number }[] = [];
+    let m: RegExpExecArray | null;
+    const re = new RegExp(imageUrlRegex.source, 'gi');
+    while ((m = re.exec(code)) !== null) {
+      if (toReplace.has(m[0])) {
+        const { width, height } = this.inferImageDimensions(code, m.index);
+        replacementSpecs.push({ width, height });
+      }
+    }
+    const replacementUrls = await Promise.all(
+      replacementSpecs.map(({ width, height }) => getPlaceholderUrl(width, height)),
+    );
+    let i = 0;
+    const result = code.replace(imageUrlRegex, (match: string) => {
+      if (!toReplace.has(match)) return match;
+      const newUrl = replacementUrls[i++] ?? `https://picsum.photos/400/300`;
+      const source = newUrl.includes('unsplash') ? 'Unsplash' : 'Picsum';
+      console.log('[IMAGE] Replaced broken →', source + ':', (match.length > 50 ? match.substring(0, 50) + '...' : match), '→', newUrl.substring(0, 55) + (newUrl.length > 55 ? '...' : ''));
+      return newUrl;
+    });
+    return result;
+  }
+
+  /** Set w/h on an Unsplash URL (replace existing or append). */
+  private setUnsplashDimensions(url: string, w: number, h: number): string {
+    const u = new URL(url);
+    u.searchParams.set('w', String(w));
+    u.searchParams.set('h', String(h));
+    u.searchParams.set('fit', 'crop');
+    return u.toString();
+  }
+
+  /** Build placeholder URL getter: relevant Unsplash image for the site theme, or Picsum. */
+  private async buildPlaceholderUrlGetter(
+    websiteName: string,
+    prompt: string,
+  ): Promise<(width: number, height: number) => Promise<string>> {
+    const query = this.deriveImageSearchQuery(websiteName, prompt);
+    console.log('[IMAGE] Derived search query for fallback:', JSON.stringify(query), '| site:', websiteName || '(none)');
+    let relevantUrl: string | null = null;
+    try {
+      relevantUrl = await this.fetchRelevantUnsplashUrl(query, 800, 600);
+      if (relevantUrl) {
+        console.log('[IMAGE] Fallback image source: Unsplash', relevantUrl.substring(0, 70) + (relevantUrl.length > 70 ? '...' : ''));
+      } else {
+        console.log('[IMAGE] Fallback image source: Picsum (no Unsplash result or no key)');
+      }
+    } catch {
+      console.log('[IMAGE] Fallback image source: Picsum (Unsplash API error)');
+    }
+    return async (width: number, height: number) => {
+      if (relevantUrl) {
+        const w = Math.min(1200, Math.max(48, width));
+        const h = Math.min(800, Math.max(48, height));
+        return this.setUnsplashDimensions(relevantUrl!, w, h);
+      }
+      return `https://picsum.photos/${width}/${height}`;
+    };
+  }
+
+  /** Unsplash placeholder URL (single stable image, resized) so generated code uses Unsplash not Picsum. */
+  private unsplashPlaceholderUrl(width: number, height: number): string {
+    const w = Math.min(1200, Math.max(48, width));
+    const h = Math.min(800, Math.max(48, height));
+    return `https://images.unsplash.com/photo-1544367567-0f2fcb009e0b?w=${w}&h=${h}&fit=crop`;
+  }
+
+  /**
+   * Replace imgur.com (and similar) image URLs with Unsplash placeholder images
    * sized according to context (hero, thumbnail, product, etc.).
    */
   private replaceBrokenImageUrls(code: string): string {
@@ -605,20 +877,77 @@ DESIGN (MANDATORY - PRODUCTION-READY):
     return code.replace(imgurRegex, (match) => {
       const idx = code.indexOf(match);
       const { width, height } = this.inferImageDimensions(code, idx >= 0 ? idx : 0);
-      return `https://picsum.photos/${width}/${height}`;
+      return this.unsplashPlaceholderUrl(width, height);
     });
+  }
+
+  /**
+   * Wrap adjacent JSX elements in object values (e.g. icons map) in a React fragment
+   * so "Adjacent JSX elements must be wrapped in an enclosing tag" is avoided.
+   */
+  private wrapAdjacentJsxInFragment(code: string): string {
+    if (!code || typeof code !== 'string') return code;
+    const adjacentJsxInObject = /:\s*((?:<[a-zA-Z][a-zA-Z0-9-]*(?:\s[^>]*)?\/>\s*){2,})(\s*)(,|\})/g;
+    return code.replace(adjacentJsxInObject, ': <>$1</>$2$3');
   }
 
   /**
    * Fix invalid "invalid left-hand side in assignment" errors from AI-generated code.
    * e.g. "if (!isOpen || !product = {})" is invalid; replace with "if (!isOpen || !product)".
+   * Also fix typo in destructuring: product = {}s, → product = {}, (stray letter after {} or []).
    */
   private sanitizeInvalidConditionAssignment(code: string): string {
     if (!code || typeof code !== 'string') return code;
-    // !variable = {} or !variable = [] → !variable (falsy check)
     return code
       .replace(/!\s*(\w+)\s*=\s*\{\s*\}/g, '!$1')
-      .replace(/!\s*(\w+)\s*=\s*\[\s*\]/g, '!$1');
+      .replace(/!\s*(\w+)\s*=\s*\[\s*\]/g, '!$1')
+      .replace(/=\s*\{\s*\}\s*([a-zA-Z])(?=\s*[,)\}\]])/g, '= {} ')
+      .replace(/=\s*\[\s*\]\s*([a-zA-Z])(?=\s*[,)\}\]])/g, '= [] ');
+  }
+
+  /**
+   * Rewrite JSX attribute template literals to string concatenation so preview never sees backticks
+   * (avoids Babel/Unicode escape errors). e.g. className={`header__nav ${x}`} → className={'header__nav ' + (x)}
+   */
+  private transformJsxAttributeTemplateLiterals(code: string): string {
+    if (!code || typeof code !== 'string') return code;
+    return code.replace(/\{\s*`((?:[^`\\]|\\.)*)`\s*\}/g, (match, content) => {
+      if (!content.includes('${')) return match;
+      const parts: ({ type: 'str'; value: string } | { type: 'expr'; value: string })[] = [];
+      let rest = content;
+      while (rest.length > 0) {
+        const i = rest.indexOf('${');
+        if (i === -1) {
+          if (rest.length > 0) parts.push({ type: 'str', value: rest });
+          break;
+        }
+        if (i > 0) parts.push({ type: 'str', value: rest.slice(0, i) });
+        let depth = 0;
+        let j = i + 2;
+        for (; j < rest.length; j++) {
+          const c = rest[j];
+          if (c === '{') depth++;
+          else if (c === '}') {
+            if (depth === 0) break;
+            depth--;
+          }
+        }
+        parts.push({ type: 'expr', value: rest.slice(i + 2, j).trim() });
+        rest = rest.slice(j + 1);
+      }
+      let out = '{';
+      parts.forEach((p, idx) => {
+        if (p.type === 'str') {
+          const escaped = p.value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+          out += "'" + escaped + "'";
+        } else {
+          out += '(' + p.value + ')';
+        }
+        if (idx < parts.length - 1) out += ' + ';
+      });
+      out += '}';
+      return out;
+    });
   }
 
   /**
@@ -726,6 +1055,37 @@ DESIGN (MANDATORY - PRODUCTION-READY):
       }
     }
     return null;
+  }
+
+  /**
+   * Detect if the v0 API returned a refusal/safety message instead of code (e.g. "I'm sorry. I'm not able to assist with that.").
+   */
+  private isRefusalResponse(response: string): boolean {
+    if (!response || typeof response !== 'string') return false;
+    const trimmed = response.trim();
+    if (trimmed.length > 500) return false;
+    const lower = trimmed.toLowerCase();
+    const refusalPhrases = [
+      "i'm sorry",
+      "i am sorry",
+      "not able to assist",
+      "cannot assist",
+      "can't assist",
+      "i cannot",
+      "i can't",
+      "unable to assist",
+      "refuse",
+      "decline",
+      "cannot fulfill",
+      "cannot help",
+      "not able to help",
+      "against my",
+      "policy",
+      "inappropriate",
+      "cannot generate",
+      "won't be able",
+    ];
+    return refusalPhrases.some((phrase) => lower.includes(phrase));
   }
 
   /**

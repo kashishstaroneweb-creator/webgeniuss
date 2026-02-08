@@ -78,7 +78,7 @@ export class AuthService {
     return Math.floor(100000 + Math.random() * 900000).toString();
   }
 
-  // ─── Send OTP Email with Neon-Styled HTML ────────────────────────────
+  // ─── Send OTP Email (black & green theme to match WebGenius) ───────────
   private async sendOtpEmail(email: string, otp: string, purpose: OtpPurpose) {
     if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
       console.error('SMTP credentials are not configured.');
@@ -88,31 +88,30 @@ export class AuthService {
     const subject =
       purpose === 'signup'
         ? 'Verify your WebGenius account'
-        : 'Your WebGenius login verification code';
+        : 'Your WebGenius login verification code'; 
 
     const html = `
       <div style="
         font-family: 'Segoe UI', Arial, sans-serif;
-        background: linear-gradient(135deg, #1a0033, #2d0b4f);
-        color: #e0b3ff;
+        background: linear-gradient(135deg, #0a0a0a 0%, #0d1117 50%, #0d1a12 100%);
+        color: #e5e7eb;
         padding: 40px 20px;
         border-radius: 16px;
         max-width: 500px;
         margin: 20px auto;
-        box-shadow: 0 0 30px rgba(138, 43, 226, 0.4);
-        border: 1px solid #9932cc;
+        box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5), 0 0 20px rgba(34, 197, 94, 0.08);
+        border: 1px solid #22c55e;
       ">
         <h2 style="
-          color: #d8b4fe;
+          color: #22c55e;
           text-align: center;
           font-size: 28px;
           margin-bottom: 10px;
-          text-shadow: 0 0 15px #b026ff;
         ">
           WebGenius ${purpose === 'signup' ? 'Account Verification' : 'Login Verification'}
         </h2>
 
-        <p style="text-align: center; font-size: 16px; opacity: 0.9;">
+        <p style="text-align: center; font-size: 16px; opacity: 0.95; color: #d1d5db;">
           Your One-Time Password (OTP) is:
         </p>
 
@@ -120,40 +119,35 @@ export class AuthService {
           text-align: center;
           margin: 30px 0;
           padding: 20px;
-          background: rgba(138, 43, 226, 0.2);
+          background: rgba(34, 197, 94, 0.08);
           border-radius: 12px;
-          border: 2px dashed #b026ff;
-          backdrop-filter: blur(10px);
+          border: 2px dashed #22c55e;
         ">
           <span style="
             font-size: 42px;
             font-weight: bold;
             letter-spacing: 12px;
-            color: #e0b3ff;
-            text-shadow: 
-              0 0 10px #b026ff,
-              0 0 20px #b026ff,
-              0 0 40px #b026ff;
+            color: #22c55e;
           ">${otp}</span>
         </div>
 
-        <p style="text-align: center; color: #b794f4;">
-          This code expires in <strong>${this.otpExpiryMinutes} minutes</strong>.
+        <p style="text-align: center; color: #9ca3af;">
+          This code expires in <strong style="color: #22c55e;">${this.otpExpiryMinutes} minutes</strong>.
         </p>
 
         <p style="
           text-align: center;
           font-size: 14px;
-          color: #998ab9;
+          color: #6b7280;
           margin-top: 30px;
         ">
           If you didn't request this, please secure your account immediately.
         </p>
 
-        <hr style="border: 0; border-top: 1px solid #6a0dad; margin: 30px 0;" />
+        <hr style="border: 0; border-top: 1px solid #22c55e; margin: 30px 0; opacity: 0.5;" />
 
-        <p style="text-align: center; font-size: 13px; color: #6a0dad;">
-          — With love from the <span style="color: #d8b4fe; text-shadow: 0 0 10px #ff00ff;">WebGenius</span> Team
+        <p style="text-align: center; font-size: 13px; color: #6b7280;">
+          — With love from the <span style="color: #22c55e;">WebGenius</span> Team
         </p>
       </div>
     `;
@@ -184,8 +178,7 @@ export class AuthService {
     user.otpSessionToken = sessionToken;
     user.otpPurpose = purpose;
 
-    await this.userRepository.save(user);
-    await this.sendOtpEmail(user.email, otp, purpose);
+    await this.userRepository.save(user);    await this.sendOtpEmail(user.email, otp, purpose);
 
     return {
       sessionToken,

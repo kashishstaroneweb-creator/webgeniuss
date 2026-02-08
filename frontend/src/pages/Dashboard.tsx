@@ -894,6 +894,7 @@ const Dashboard = () => {
                           components={generatedWebsite.components}
                           viteConfig={generatedWebsite.viteConfig}
                           websiteName={generatedWebsite.websiteName}
+                          prompt={generatedWebsite.prompt}
                           className="h-full min-h-[600px]"
                         />
                       </div>
