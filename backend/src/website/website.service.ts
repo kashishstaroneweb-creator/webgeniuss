@@ -7,7 +7,11 @@ import { ObjectId } from 'mongodb';
 import OpenAI from 'openai';
 import * as fs from 'fs';
 import * as path from 'path';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import axios from 'axios';
+
+const execAsync = promisify(exec);
 
 @Injectable()
 export class WebsiteService {
@@ -716,6 +720,39 @@ DESIGN (MANDATORY - PRODUCTION-READY):
   }
 
   /**
+   * Fetch multiple different Unsplash image URLs for the same topic, HEAD-check each; return only URLs that don't 404/redirect/timeout.
+   */
+  private async fetchMultipleValidatedUnsplashUrls(searchQuery: string, count: number): Promise<string[]> {
+    const key = process.env.UNSPLASH_ACCESS_KEY;
+    if (!key) return [];
+    try {
+      const res = await axios.get<{ results: Array<{ urls: { regular: string; raw?: string } }> }>(
+        'https://api.unsplash.com/search/photos',
+        {
+          params: { query: searchQuery, per_page: Math.min(count, 30), client_id: key },
+          timeout: 8000,
+        },
+      );
+      const results = res.data?.results || [];
+      const validated: string[] = [];
+      for (const r of results) {
+        const base = r?.urls?.regular || r?.urls?.raw;
+        if (!base) continue;
+        if (await this.isImageUrlOk(base)) {
+          validated.push(base);
+          if (validated.length >= count) break;
+        }
+      }
+      if (validated.length > 0) {
+        console.log('[IMAGE] Fetched', validated.length, 'different validated Unsplash images for topic:', JSON.stringify(searchQuery));
+      }
+      return validated;
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * Return a single Unsplash image URL for the given site context, HEAD-checked so it does not 404.
    * Used by the preview fallback: when an image fails in the iframe, the client calls this to get a validated Unsplash URL.
    */
@@ -778,11 +815,11 @@ DESIGN (MANDATORY - PRODUCTION-READY):
   }
 
   /**
-   * Validate image URLs and replace 404/failed ones with a relevant fallback (Unsplash search by site theme, else Picsum).
+   * Validate image URLs and replace 404/failed ones with relevant fallbacks: different Unsplash images per replacement (same topic), HEAD-checked so no 404/redirect/timeout.
    */
   private async validateAndReplaceBrokenImageUrls(
     code: string,
-    getPlaceholderUrl: (width: number, height: number) => Promise<string>,
+    getPlaceholderUrl: (width: number, height: number, index?: number) => Promise<string>,
   ): Promise<string> {
     if (!code || typeof code !== 'string') return code;
     const imageUrlRegex = /https?:\/\/[^\s"'<>)\]]+\.(?:jpg|jpeg|png|gif|webp)(?:\?[^\s"'<>)\]]*)?|https?:\/\/(?:images\.)?unsplash\.com\/[^\s"'<>)\]]+/gi;
@@ -810,7 +847,7 @@ DESIGN (MANDATORY - PRODUCTION-READY):
       }
     }
     const replacementUrls = await Promise.all(
-      replacementSpecs.map(({ width, height }) => getPlaceholderUrl(width, height)),
+      replacementSpecs.map(({ width, height }, i) => getPlaceholderUrl(width, height, i)),
     );
     let i = 0;
     const result = code.replace(imageUrlRegex, (match: string) => {
@@ -832,31 +869,31 @@ DESIGN (MANDATORY - PRODUCTION-READY):
     return u.toString();
   }
 
-  /** Build placeholder URL getter: relevant Unsplash image for the site theme, or Picsum. */
+  /** Build placeholder URL getter: multiple different Unsplash images for the site theme (each replacement gets a different image), or Picsum fallback. */
   private async buildPlaceholderUrlGetter(
     websiteName: string,
     prompt: string,
-  ): Promise<(width: number, height: number) => Promise<string>> {
+  ): Promise<(width: number, height: number, index?: number) => Promise<string>> {
     const query = this.deriveImageSearchQuery(websiteName, prompt);
     console.log('[IMAGE] Derived search query for fallback:', JSON.stringify(query), '| site:', websiteName || '(none)');
-    let relevantUrl: string | null = null;
+    const validatedUrls: string[] = [];
     try {
-      relevantUrl = await this.fetchRelevantUnsplashUrl(query, 800, 600);
-      if (relevantUrl) {
-        console.log('[IMAGE] Fallback image source: Unsplash', relevantUrl.substring(0, 70) + (relevantUrl.length > 70 ? '...' : ''));
-      } else {
+      const urls = await this.fetchMultipleValidatedUnsplashUrls(query, 20);
+      validatedUrls.push(...urls);
+      if (validatedUrls.length === 0) {
         console.log('[IMAGE] Fallback image source: Picsum (no Unsplash result or no key)');
       }
     } catch {
       console.log('[IMAGE] Fallback image source: Picsum (Unsplash API error)');
     }
-    return async (width: number, height: number) => {
-      if (relevantUrl) {
-        const w = Math.min(1200, Math.max(48, width));
-        const h = Math.min(800, Math.max(48, height));
-        return this.setUnsplashDimensions(relevantUrl!, w, h);
+    return async (width: number, height: number, index: number = 0) => {
+      const w = Math.min(1200, Math.max(48, width));
+      const h = Math.min(800, Math.max(48, height));
+      if (validatedUrls.length > 0) {
+        const base = validatedUrls[index % validatedUrls.length];
+        return this.setUnsplashDimensions(base, w, h);
       }
-      return `https://picsum.photos/${width}/${height}`;
+      return `https://picsum.photos/${w}/${h}?random=${index}`;
     };
   }
 
@@ -1265,8 +1302,11 @@ DESIGN (MANDATORY - PRODUCTION-READY):
 
             // Save index.html
             const indexHtml = viteConfig?.indexHtml || this.generateDefaultIndexHtml(websiteName);
-            // Update index.html to load main.jsx instead of main.js
-            const updatedIndexHtml = indexHtml.replace(/src\/main\.js/g, 'src/main.jsx');
+            // Normalize script src to /src/main.jsx (fix AI typos like main.jsxx or main.js)
+            const updatedIndexHtml = indexHtml.replace(
+              /src=["']([^"']*\/main)\.(js|jsx|jsxx|tsx)["']/gi,
+              'src="/src/main.jsx"',
+            );
             fs.writeFileSync(path.join(baseDir, 'index.html'), updatedIndexHtml);
 
     // Save package.json
@@ -1357,10 +1397,19 @@ dist
   }
 
   private generateDefaultViteConfig(): string {
+    return this.generateViteConfigWithBase('/');
+  }
+
+  /**
+   * Vite config with a base path (for preview serving at /website/preview/:userId/:websiteId/)
+   */
+  private generateViteConfigWithBase(basePath: string): string {
+    const base = basePath.endsWith('/') ? basePath : basePath + '/';
     return `import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig({
+  base: '${base.replace(/'/g, "\\'")}',
   plugins: [react()],
   server: {
     port: 3000,
@@ -1493,6 +1542,103 @@ body {
       ...website,
       id: website.id.toString(),
     };
+  }
+
+  /** Build timeout in ms (install + build) */
+  private static readonly PREVIEW_BUILD_TIMEOUT_MS = 180000;
+
+  /**
+   * Runs npm install and npm run build in baseDir. Writes vite.config with basePath before building.
+   */
+  private async buildProjectForPreview(
+    baseDir: string,
+    basePath: string,
+  ): Promise<{ success: true } | { success: false; log: string }> {
+    const distPath = path.join(baseDir, 'dist');
+    const viteConfigPath = path.join(baseDir, 'vite.config.js');
+    const viteConfigWithBase = this.generateViteConfigWithBase(basePath);
+    fs.writeFileSync(viteConfigPath, viteConfigWithBase);
+
+    const opts = {
+      cwd: baseDir,
+      timeout: WebsiteService.PREVIEW_BUILD_TIMEOUT_MS,
+      maxBuffer: 10 * 1024 * 1024,
+    };
+
+    try {
+      await execAsync('npm install', opts);
+    } catch (err: any) {
+      const log = [err.stdout, err.stderr].filter(Boolean).join('\n') || err.message;
+      return { success: false, log: `npm install failed: ${log}` };
+    }
+
+    try {
+      await execAsync('npm run build', opts);
+    } catch (err: any) {
+      const log = [err.stdout, err.stderr].filter(Boolean).join('\n') || err.message;
+      return { success: false, log: `npm run build failed: ${log}` };
+    }
+
+    if (!fs.existsSync(distPath) || !fs.existsSync(path.join(distPath, 'index.html'))) {
+      return { success: false, log: 'Build completed but dist/index.html not found.' };
+    }
+
+    return { success: true };
+  }
+
+  /**
+   * Ensures the Vite project is on disk, builds it for preview, returns the URL to serve it.
+   * Only for component-based (Vite) websites.
+   */
+  async getPreviewUrl(websiteId: string, userId: string): Promise<
+    { success: true; previewUrl: string } | { success: false; error: string; log?: string }
+  > {
+    const website = await this.websiteRepository.findOne({
+      where: { _id: new ObjectId(websiteId) } as any,
+    });
+
+    if (!website || website.userId !== userId) {
+      return { success: false, error: 'Website not found or access denied' };
+    }
+
+    const components = website.components || [];
+    const viteConfig = website.viteConfig;
+
+    if (components.length === 0 || !viteConfig) {
+      return { success: false, error: 'Real-build preview is only available for component-based (Vite) websites.' };
+    }
+
+    const baseDir = path.join(process.cwd(), 'generated_sites', userId, websiteId);
+
+    if (!fs.existsSync(baseDir)) {
+      await this.saveViteProject(
+        userId,
+        websiteId,
+        components,
+        viteConfig,
+        website.websiteName,
+      );
+    } else {
+      // Ensure files are up to date (e.g. user may have edited and we only have in DB)
+      await this.saveViteProject(
+        userId,
+        websiteId,
+        components,
+        viteConfig,
+        website.websiteName,
+      );
+    }
+
+    const basePath = `/website/preview/${userId}/${websiteId}`;
+    const buildResult = await this.buildProjectForPreview(baseDir, basePath);
+
+    if (buildResult.success === false) {
+      return { success: false, error: 'Preview build failed', log: buildResult.log };
+    }
+
+    const apiBase = process.env.API_URL || process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 3000}`;
+    const previewUrl = `${apiBase.replace(/\/$/, '')}${basePath}/`;
+    return { success: true, previewUrl };
   }
 
   async deleteWebsite(websiteId: string, userId: string) {

@@ -44,7 +44,7 @@ const PREVIEW_KNOWN_GLOBALS = new Set([
   'length', 'map', 'filter', 'forEach', 'push', 'pop', 'shift', 'unshift', 'slice', 'splice', 'indexOf', 'find', 'findIndex', 'includes',
   'keys', 'values', 'entries', 'reduce', 'some', 'every', 'flat', 'join', 'concat', 'sort', 'reverse',
   'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default', 'delete', 'do', 'else', 'export', 'extends',
-  'finally', 'for', 'function', 'if', 'import', 'in', 'instanceof', 'let', 'new', 'return', 'super', 'switch', 'this', 'throw',
+  'finally', 'for', 'function', 'if', 'import', 'in', 'instanceof', 'let', 'new', 'return', 'static', 'super', 'switch', 'this', 'throw',
   'try', 'typeof', 'var', 'void', 'while', 'with', 'yield', 'async', 'await',
 ]);
 

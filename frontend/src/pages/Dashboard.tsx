@@ -5,7 +5,7 @@ import { useSidebarStore } from '@/store/sidebarStore';
 import api from '@/lib/api';
 import Button from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Sparkles, Send, Eye, Code, Monitor, Download } from 'lucide-react';
+import { Sparkles, Send, Eye, Code, Monitor, Download, Maximize2, Minimize2 } from 'lucide-react';
 import WebsitePreview from '@/components/WebsitePreview';
 import { GeneratingLoader } from '@/components/GeneratingLoader';
 import { PromptInput } from '@/components/PromptInput';
@@ -34,6 +34,7 @@ interface ViteConfig {
 
 interface GeneratedWebsite {
   id: string;
+  userId?: string;
   websiteName: string;
   prompt?: string;
   htmlCode?: string;
@@ -60,6 +61,10 @@ const Dashboard = () => {
   const [activeComponentIndex, setActiveComponentIndex] = useState(0);
   const [stats, setStats] = useState({ totalProjects: 0, generations: 0, creditsUsed: 0, creditsRemaining: 5 });
   const [loadingHistoryWebsite, setLoadingHistoryWebsite] = useState(false);
+  const [realPreviewUrl, setRealPreviewUrl] = useState<string | null>(null);
+  const [realPreviewLoading, setRealPreviewLoading] = useState(false);
+  const [realPreviewError, setRealPreviewError] = useState<string | null>(null);
+  const [realPreviewFullscreen, setRealPreviewFullscreen] = useState(false);
 
   const showSplitView = isGenerating || loadingHistoryWebsite || generatedWebsite !== null;
 
@@ -73,6 +78,7 @@ const Dashboard = () => {
         const data = res.data;
         setGeneratedWebsite({
           id: data.id,
+          userId: data.userId,
           websiteName: data.websiteName || '',
           prompt: data.prompt,
           htmlCode: data.htmlCode,
@@ -93,6 +99,52 @@ const Dashboard = () => {
     };
     loadHistoryWebsite();
   }, [websiteIdFromUrl, setCollapsed]);
+
+  // Reset real preview when switching website or closing
+  useEffect(() => {
+    if (!generatedWebsite) {
+      setRealPreviewUrl(null);
+      setRealPreviewError(null);
+      return;
+    }
+  }, [generatedWebsite?.id]);
+
+  // Fetch real-build preview URL when showing preview for a component-based website
+  useEffect(() => {
+    if (
+      !generatedWebsite?.id ||
+      !generatedWebsite?.components?.length ||
+      showCodeView
+    ) {
+      return;
+    }
+    const userId = generatedWebsite.userId || '691df5ddac69fc46beca44b3';
+    let cancelled = false;
+    setRealPreviewLoading(true);
+    setRealPreviewError(null);
+    api
+      .get(`/website/${generatedWebsite.id}/preview`, { params: { userId } })
+      .then((res) => {
+        if (!cancelled && res.data?.previewUrl) {
+          setRealPreviewUrl(res.data.previewUrl);
+          setRealPreviewError(null);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          const msg = err.response?.data?.message || err.response?.data?.error || err.message || 'Preview build failed';
+          const log = err.response?.data?.log;
+          setRealPreviewError(log ? `${msg}: ${log}` : msg);
+          setRealPreviewUrl(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setRealPreviewLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [generatedWebsite?.id, generatedWebsite?.components?.length, generatedWebsite?.userId, showCodeView]);
 
   useEffect(() => {
     // Fetch stats
@@ -885,18 +937,87 @@ const Dashboard = () => {
                         )}
                       </div>
                     ) : (
-                      // Preview View
-                      <div className="flex-1 overflow-auto h-full">
-                        <WebsitePreview
-                          html={generatedWebsite.htmlCode}
-                          css={generatedWebsite.cssCode}
-                          js={generatedWebsite.jsCode}
-                          components={generatedWebsite.components}
-                          viteConfig={generatedWebsite.viteConfig}
-                          websiteName={generatedWebsite.websiteName}
-                          prompt={generatedWebsite.prompt}
-                          className="h-full min-h-[600px]"
-                        />
+                      // Preview View: real-build iframe or legacy
+                      <div className="flex-1 overflow-auto h-full flex flex-col min-h-[600px]">
+                        {realPreviewLoading && (
+                          <div className="flex-1 flex items-center justify-center min-h-[600px]">
+                            <GeneratingLoader variant="building" />
+                          </div>
+                        )}
+                        {!realPreviewLoading && realPreviewUrl && (
+                          <>
+                            {realPreviewFullscreen ? (
+                              <div className="fixed inset-0 z-50 bg-background flex flex-col">
+                                <div className="flex items-center justify-between p-4 border-b bg-card flex-shrink-0">
+                                  <h2 className="text-lg font-semibold">{generatedWebsite.websiteName || 'Website Preview'}</h2>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => setRealPreviewFullscreen(false)}
+                                    className="gap-2"
+                                  >
+                                    <Minimize2 className="h-4 w-4" />
+                                    Exit Fullscreen
+                                  </Button>
+                                </div>
+                                <iframe
+                                  src={realPreviewUrl}
+                                  title="Website Preview"
+                                  className="flex-1 w-full border-0 min-h-0"
+                                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                                />
+                              </div>
+                            ) : (
+                              <div className="border rounded-lg overflow-hidden bg-card flex flex-col flex-1 min-h-[600px]">
+                                <div className="flex items-center justify-between p-3 border-b bg-muted/50 flex-shrink-0">
+                                  <h3 className="text-sm font-medium">{generatedWebsite.websiteName || 'Preview'}</h3>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => setRealPreviewFullscreen(true)}
+                                    className="h-7 px-2"
+                                  >
+                                    <Maximize2 className="h-3 w-3" />
+                                  </Button>
+                                </div>
+                                <iframe
+                                  src={realPreviewUrl}
+                                  title="Website Preview"
+                                  className="w-full flex-1 min-h-[500px] border-0"
+                                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                                />
+                              </div>
+                            )}
+                          </>
+                        )}
+                        {!realPreviewLoading && realPreviewError && (
+                          <div className="p-4 space-y-2">
+                            <p className="text-sm text-destructive">{realPreviewError}</p>
+                            <p className="text-xs text-muted-foreground">Showing quick preview instead.</p>
+                            <WebsitePreview
+                              html={generatedWebsite.htmlCode}
+                              css={generatedWebsite.cssCode}
+                              js={generatedWebsite.jsCode}
+                              components={generatedWebsite.components}
+                              viteConfig={generatedWebsite.viteConfig}
+                              websiteName={generatedWebsite.websiteName}
+                              prompt={generatedWebsite.prompt}
+                              className="h-full min-h-[400px]"
+                            />
+                          </div>
+                        )}
+                        {!realPreviewLoading && !realPreviewUrl && !realPreviewError && (
+                          <WebsitePreview
+                            html={generatedWebsite.htmlCode}
+                            css={generatedWebsite.cssCode}
+                            js={generatedWebsite.jsCode}
+                            components={generatedWebsite.components}
+                            viteConfig={generatedWebsite.viteConfig}
+                            websiteName={generatedWebsite.websiteName}
+                            prompt={generatedWebsite.prompt}
+                            className="h-full min-h-[600px]"
+                          />
+                        )}
                       </div>
                     )}
                   </div>

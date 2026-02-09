@@ -6,7 +6,7 @@ import React, { useState, useEffect } from 'react';
 // Single cool cat-coding GIF (illustration style, no box) – Tenor
 const COOL_GIF = 'https://media1.tenor.com/m/LSDeBe2JAfoAAAAd/cat-coding.gif';
 
-// Fake "live" code lines
+// Fake "live" code lines – generation
 const CODE_LINES = [
   { text: 'const website = await ai.generate();', type: 'js' },
   { text: '<div className="your-site">...</div>', type: 'html' },
@@ -18,17 +18,43 @@ const CODE_LINES = [
   { text: '// Compiling good vibes only ✨', type: 'comment' },
 ];
 
-export function GeneratingLoader() {
+// Build preview – same funky vibe, build-themed lines
+const BUILD_PREVIEW_LINES = [
+  { text: 'npm install', type: 'js' },
+  { text: 'vite build', type: 'js' },
+  { text: '// Bundling your components...', type: 'comment' },
+  { text: 'dist/index.html ✓', type: 'comment' },
+  { text: '// Almost there 🚀', type: 'comment' },
+  { text: 'assets/index-*.js', type: 'js' },
+  { text: '// Real preview, no Babel in browser', type: 'comment' },
+];
+
+export interface GeneratingLoaderProps {
+  /** Override main title (e.g. "Building preview...") */
+  title?: string;
+  /** Override subtitle */
+  subtitle?: string;
+  /** Use build-themed code lines instead of generation lines */
+  variant?: 'generating' | 'building';
+}
+
+export function GeneratingLoader({ title, subtitle, variant = 'generating' }: GeneratingLoaderProps) {
   const [codeIndex, setCodeIndex] = useState(0);
+
+  const lines = variant === 'building' ? BUILD_PREVIEW_LINES : CODE_LINES;
+  const lineCount = lines.length;
 
   useEffect(() => {
     const t = setInterval(() => {
-      setCodeIndex((i) => (i + 1) % CODE_LINES.length);
+      setCodeIndex((i) => (i + 1) % lineCount);
     }, 1200);
     return () => clearInterval(t);
-  }, []);
+  }, [lineCount]);
 
-  const currentCode = CODE_LINES[codeIndex];
+  const currentCode = lines[codeIndex];
+
+  const displayTitle = title ?? (variant === 'building' ? 'Building preview...' : 'Generating your website...');
+  const displaySubtitle = subtitle ?? (variant === 'building' ? 'Running npm install & vite build' : 'Our AI is crafting your site with care');
 
   return (
     <div className="flex-1 flex items-center justify-center min-h-[380px] p-4">
@@ -58,7 +84,7 @@ export function GeneratingLoader() {
             <span className="w-2.5 h-2.5 rounded-full bg-red-500/80" />
             <span className="w-2.5 h-2.5 rounded-full bg-yellow-500/80" />
             <span className="w-2.5 h-2.5 rounded-full bg-green-500/80" />
-            <span className="ml-2 text-[10px] text-muted-foreground font-mono">generating.tsx</span>
+            <span className="ml-2 text-[10px] text-muted-foreground font-mono">{variant === 'building' ? 'build.ts' : 'generating.tsx'}</span>
           </div>
           <div className="px-3 py-2.5 font-mono text-xs min-h-[44px] flex items-center">
             <span className="text-muted-foreground select-none">$ </span>
@@ -78,9 +104,9 @@ export function GeneratingLoader() {
         </div>
 
         <div className="space-y-1">
-          <h3 className="text-lg font-semibold">Generating your website...</h3>
+          <h3 className="text-lg font-semibold">{displayTitle}</h3>
           <p className="text-sm text-muted-foreground">
-            Our AI is crafting your site with care
+            {displaySubtitle}
           </p>
         </div>
 
