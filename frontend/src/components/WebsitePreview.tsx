@@ -166,7 +166,7 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
               prev = code;
               code = code.replace(re, (match, content) => {
                 if (!content.includes('${')) return match;
-                const parts: { type: 'str'; value: string } | { type: 'expr'; value: string }[] = [];
+                const parts: ({ type: 'str'; value: string } | { type: 'expr'; value: string })[] = [];
                 let rest = content;
                 while (rest.length > 0) {
                   const i = rest.indexOf('${');
@@ -469,7 +469,9 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
                     let constEnd = processedMain.indexOf(';', constStart);
                     if (constEnd === -1) {
                       // No semicolon, try to find next statement (ReactDOM or function)
-                      const nextStatement = processedMain.search(/(ReactDOM|function|const|var)\s/, constStart + 10);
+                      const offset = constStart + 10;
+                      const found = processedMain.slice(offset).search(/(ReactDOM|function|const|var)\s/);
+                      const nextStatement = found === -1 ? -1 : offset + found;
                       if (nextStatement !== -1) {
                         constEnd = nextStatement;
                       } else {
@@ -1029,7 +1031,7 @@ window.__PREVIEW_PARAMS__ = JSON.parse('${placeholderParamsEscaped}');
           // Safety: convert any remaining {__WEBPREVIEW_BACKTICK__...${expr}...__WEBPREVIEW_BACKTICK__} to concatenation so we never restore backticks for template literals (fixes "Unterminated template")
           content = content.replace(/\{\s*__WEBPREVIEW_BACKTICK__([\s\S]*?)__WEBPREVIEW_BACKTICK__\s*\}/g, (_match, inner) => {
             if (!inner.includes('${')) return _match;
-            const parts: { type: 'str'; value: string } | { type: 'expr'; value: string }[] = [];
+            const parts: ({ type: 'str'; value: string } | { type: 'expr'; value: string })[] = [];
             let rest = inner;
             while (rest.length > 0) {
               const i = rest.indexOf('${');

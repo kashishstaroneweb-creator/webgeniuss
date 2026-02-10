@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import api from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import Button from '@/components/ui/Button';
@@ -6,6 +6,8 @@ import { History as HistoryIcon, Clock, Trash2, Code, Monitor, ChevronDown, Chev
 import WebsitePreview from '@/components/WebsitePreview';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { useAuthStore } from '@/store/authStore';
+import { GeneratingLoader } from '@/components/GeneratingLoader';
 
 interface Component {
   name: string;
@@ -26,6 +28,7 @@ interface ViteConfig {
 
 interface Website {
   id: string;
+  userId?: string;
   websiteName: string;
   prompt: string;
   htmlCode?: string;
@@ -36,7 +39,10 @@ interface Website {
   createdAt: string;
 }
 
+const DEFAULT_USER_ID = '691df5ddac69fc46beca44b3';
+
 const History = () => {
+  const { user } = useAuthStore();
   const [websites, setWebsites] = useState<Website[]>([]);
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -45,10 +51,18 @@ const History = () => {
   const [activeTab, setActiveTab] = useState<Record<string, string>>({});
   const [activeComponentIndex, setActiveComponentIndex] = useState<Record<string, number>>({});
   const [previewWebsite, setPreviewWebsite] = useState<Website | null>(null);
+  // Real build-then-preview (same flow as Dashboard)
+  const [previewUrlByWebsite, setPreviewUrlByWebsite] = useState<Record<string, string>>({});
+  const [previewLoadingByWebsite, setPreviewLoadingByWebsite] = useState<Record<string, boolean>>({});
+  const [previewErrorByWebsite, setPreviewErrorByWebsite] = useState<Record<string, string>>({});
 
   useEffect(() => {
     fetchWebsites();
   }, []);
+
+  const getUserIdForWebsite = useCallback((website: Website) => {
+    return website.userId || user?.id || DEFAULT_USER_ID;
+  }, [user?.id]);
 
   const fetchWebsites = async () => {
     try {
@@ -60,6 +74,65 @@ const History = () => {
       setLoading(false);
     }
   };
+
+  // Real build-then-preview: fetch preview URL for component-based sites when we show their preview (expanded card or fullscreen)
+  useEffect(() => {
+    const idsNeedingPreview = new Set<string>();
+    websites.forEach((w) => {
+      const isExpandedPreview = expandedPreviews.has(w.id) && viewMode[w.id] === 'preview';
+      const isFullscreen = previewWebsite?.id === w.id;
+      if ((isExpandedPreview || isFullscreen) && w.components && w.components.length > 0) {
+        idsNeedingPreview.add(w.id);
+      }
+    });
+    idsNeedingPreview.forEach((websiteId) => {
+      const website = websites.find((w) => w.id === websiteId);
+      if (!website) return;
+      if (previewUrlByWebsite[websiteId] || previewErrorByWebsite[websiteId]) return;
+      if (previewLoadingByWebsite[websiteId]) return;
+      setPreviewLoadingByWebsite((prev) => ({ ...prev, [websiteId]: true }));
+      setPreviewErrorByWebsite((prev) => {
+        const next = { ...prev };
+        delete next[websiteId];
+        return next;
+      });
+      const userId = getUserIdForWebsite(website);
+      api
+        .get(`/website/${websiteId}/preview`, { params: { userId } })
+        .then((res) => {
+          if (res.data?.previewUrl) {
+            setPreviewUrlByWebsite((prev) => ({ ...prev, [websiteId]: res.data.previewUrl }));
+            setPreviewErrorByWebsite((prev) => {
+              const next = { ...prev };
+              delete next[websiteId];
+              return next;
+            });
+          }
+        })
+        .catch((err) => {
+          const msg = err.response?.data?.message || err.response?.data?.error || err.message || 'Preview build failed';
+          const log = err.response?.data?.log;
+          setPreviewErrorByWebsite((prev) => ({ ...prev, [websiteId]: log ? `${msg}: ${log}` : msg }));
+          setPreviewUrlByWebsite((prev) => {
+            const next = { ...prev };
+            delete next[websiteId];
+            return next;
+          });
+        })
+        .finally(() => {
+          setPreviewLoadingByWebsite((prev) => ({ ...prev, [websiteId]: false }));
+        });
+    });
+  }, [
+    websites,
+    expandedPreviews,
+    viewMode,
+    previewWebsite?.id,
+    previewUrlByWebsite,
+    previewLoadingByWebsite,
+    previewErrorByWebsite,
+    getUserIdForWebsite,
+  ]);
 
   const handleDelete = async (id: string) => {
     if (!confirm('Are you sure you want to delete this website? This action cannot be undone.')) {
@@ -314,18 +387,65 @@ const History = () => {
                       {/* Content Area */}
                       <div className="border rounded-lg overflow-hidden bg-card" style={{ minHeight: '500px', maxHeight: '700px' }}>
                         {viewMode[website.id] === 'preview' ? (
-                          // Preview View
-                          <div className="h-full overflow-auto" style={{ maxHeight: '700px' }}>
-                      <WebsitePreview
-                        html={website.htmlCode}
-                        css={website.cssCode}
-                        js={website.jsCode}
-                              components={website.components}
-                              viteConfig={website.viteConfig}
-                        websiteName={website.websiteName}
-                        prompt={website.prompt}
-                              className="min-h-[500px]"
-                      />
+                          // Preview View: real build iframe for component-based, else legacy WebsitePreview
+                          <div className="h-full overflow-auto flex flex-col" style={{ maxHeight: '700px' }}>
+                            {website.components && website.components.length > 0 ? (
+                              <>
+                                {previewLoadingByWebsite[website.id] && (
+                                  <div className="flex-1 flex items-center justify-center min-h-[500px]">
+                                    <GeneratingLoader variant="building" />
+                                  </div>
+                                )}
+                                {!previewLoadingByWebsite[website.id] && previewUrlByWebsite[website.id] && (
+                                  <iframe
+                                    src={previewUrlByWebsite[website.id]}
+                                    title={website.websiteName || 'Preview'}
+                                    className="w-full min-h-[500px] border-0 flex-1"
+                                    style={{ height: '700px' }}
+                                    sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                                  />
+                                )}
+                                {!previewLoadingByWebsite[website.id] && previewErrorByWebsite[website.id] && (
+                                  <div className="p-4 space-y-2">
+                                    <p className="text-sm text-destructive">{previewErrorByWebsite[website.id]}</p>
+                                    <p className="text-xs text-muted-foreground">Showing quick preview instead.</p>
+                                    <WebsitePreview
+                                      html={website.htmlCode}
+                                      css={website.cssCode}
+                                      js={website.jsCode}
+                                      components={website.components}
+                                      viteConfig={website.viteConfig}
+                                      websiteName={website.websiteName}
+                                      prompt={website.prompt}
+                                      className="min-h-[500px]"
+                                    />
+                                  </div>
+                                )}
+                                {!previewLoadingByWebsite[website.id] && !previewUrlByWebsite[website.id] && !previewErrorByWebsite[website.id] && (
+                                  <WebsitePreview
+                                    html={website.htmlCode}
+                                    css={website.cssCode}
+                                    js={website.jsCode}
+                                    components={website.components}
+                                    viteConfig={website.viteConfig}
+                                    websiteName={website.websiteName}
+                                    prompt={website.prompt}
+                                    className="min-h-[500px]"
+                                  />
+                                )}
+                              </>
+                            ) : (
+                              <WebsitePreview
+                                html={website.htmlCode}
+                                css={website.cssCode}
+                                js={website.jsCode}
+                                components={website.components}
+                                viteConfig={website.viteConfig}
+                                websiteName={website.websiteName}
+                                prompt={website.prompt}
+                                className="min-h-[500px]"
+                              />
+                            )}
                           </div>
                         ) : (
                           // Code View with Tabs - Component-based or Legacy
@@ -723,17 +843,41 @@ const History = () => {
         )}
 
         {previewWebsite && (
-                          <WebsitePreview
-            html={previewWebsite.htmlCode}
-            css={previewWebsite.cssCode}
-            js={previewWebsite.jsCode}
-            components={previewWebsite.components}
-            viteConfig={previewWebsite.viteConfig}
-            websiteName={previewWebsite.websiteName}
-            prompt={previewWebsite.prompt}
-            isModal={true}
-            onClose={() => setPreviewWebsite(null)}
-          />
+          previewWebsite.components && previewWebsite.components.length > 0 && previewUrlByWebsite[previewWebsite.id] ? (
+            <div className="fixed inset-0 z-50 flex flex-col bg-background">
+              <div className="flex items-center justify-between p-4 border-b bg-card flex-shrink-0">
+                <h2 className="text-lg font-semibold">{previewWebsite.websiteName || 'Website Preview'}</h2>
+                <Button variant="ghost" size="sm" onClick={() => setPreviewWebsite(null)}>
+                  Close
+                </Button>
+              </div>
+              <iframe
+                src={previewUrlByWebsite[previewWebsite.id]}
+                title={previewWebsite.websiteName || 'Preview'}
+                className="flex-1 w-full border-0 min-h-0"
+                sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+              />
+            </div>
+          ) : previewWebsite.components && previewWebsite.components.length > 0 && previewLoadingByWebsite[previewWebsite.id] ? (
+            <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/50 backdrop-blur-sm">
+              <GeneratingLoader variant="building" />
+              <Button variant="ghost" size="sm" className="mt-4" onClick={() => setPreviewWebsite(null)}>
+                Cancel
+              </Button>
+            </div>
+          ) : (
+            <WebsitePreview
+              html={previewWebsite.htmlCode}
+              css={previewWebsite.cssCode}
+              js={previewWebsite.jsCode}
+              components={previewWebsite.components}
+              viteConfig={previewWebsite.viteConfig}
+              websiteName={previewWebsite.websiteName}
+              prompt={previewWebsite.prompt}
+              isModal={true}
+              onClose={() => setPreviewWebsite(null)}
+            />
+          )
         )}
       </div>
     </div>
