@@ -1,11 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useAuthStore } from '@/store/authStore';
 import { useSidebarStore } from '@/store/sidebarStore';
 import api from '@/lib/api';
 import Button from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Sparkles, Send, Eye, Code, Monitor, Download, Maximize2, Minimize2 } from 'lucide-react';
+import { Sparkles, Send, Eye, Code, Monitor, Download, Maximize2, Minimize2, Paperclip, Wand2 } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import WebsitePreview from '@/components/WebsitePreview';
 import { GeneratingLoader } from '@/components/GeneratingLoader';
 import { PromptInput } from '@/components/PromptInput';
@@ -65,8 +66,45 @@ const Dashboard = () => {
   const [realPreviewLoading, setRealPreviewLoading] = useState(false);
   const [realPreviewError, setRealPreviewError] = useState<string | null>(null);
   const [realPreviewFullscreen, setRealPreviewFullscreen] = useState(false);
+  /** Steps for left-panel processing status: thinking → generating files → done */
+  const [generationStep, setGenerationStep] = useState<'thinking' | 'generating' | 'done'>('thinking');
+  /** Add-on prompt for editing the current website in the same chat */
+  const [addOnPrompt, setAddOnPrompt] = useState('');
+  const [editLoading, setEditLoading] = useState(false);
 
   const showSplitView = isGenerating || loadingHistoryWebsite || generatedWebsite !== null;
+
+  /** Chat messages derived from prompt (original + [Edit] lines) for v0-style chat UI */
+  const chatMessages = useMemo(() => {
+    if (!generatedWebsite?.prompt) return [];
+    const parts = generatedWebsite.prompt.split(/\n\[Edit\]\s*/).map((s) => s.trim()).filter(Boolean);
+    return parts;
+  }, [generatedWebsite?.prompt]);
+
+  const editSuggestions = [
+    'Make the header background dark blue',
+    'Add a contact form below the hero',
+    'Change the hero title to Welcome',
+    'Add a footer with social links',
+  ];
+
+  /** After edit we get previewUrl from response; skip refetch so we don't build twice */
+  const previewUrlFromEditIdRef = useRef<string | null>(null);
+
+  // Advance generation step for "processing" feel (v0-style) while loading
+  useEffect(() => {
+    if (!isGenerating && !loadingHistoryWebsite) {
+      if (generatedWebsite) setGenerationStep('done');
+      else setGenerationStep('thinking');
+      return;
+    }
+    setGenerationStep('thinking');
+    const t = setTimeout(() => setGenerationStep('generating'), 2000);
+    return () => clearTimeout(t);
+  }, [isGenerating, loadingHistoryWebsite]);
+  useEffect(() => {
+    if (generatedWebsite) setGenerationStep('done');
+  }, [generatedWebsite]);
 
   // Load website from history when ?website=id is in URL (e.g. from sidebar Recents click)
   useEffect(() => {
@@ -116,6 +154,10 @@ const Dashboard = () => {
       !generatedWebsite?.components?.length ||
       showCodeView
     ) {
+      return;
+    }
+    if (previewUrlFromEditIdRef.current === generatedWebsite.id) {
+      previewUrlFromEditIdRef.current = null;
       return;
     }
     const userId = generatedWebsite.userId || '691df5ddac69fc46beca44b3';
@@ -262,9 +304,11 @@ const Dashboard = () => {
         tokenLength: token.length
       });
 
+      const currentUserId = (user as any)?.id ?? (user as any)?._id;
       const res = await api.post('/website/generate', {
         prompt,
         websiteName: websiteName || `Website ${Date.now()}`,
+        ...(currentUserId && { userId: currentUserId }),
       });
       
       console.log('Website generated successfully!', res.data);
@@ -281,8 +325,7 @@ const Dashboard = () => {
       }
       
       setGeneratedWebsite(res.data);
-      setPrompt('');
-      setWebsiteName('');
+      // Keep prompt and websiteName visible on the left for "generate again"
       // Automatically collapse sidebar when website is generated
       setCollapsed(true);
     } catch (error: any) {
@@ -315,6 +358,38 @@ const Dashboard = () => {
     } finally {
       setLoading(false);
       setIsGenerating(false);
+    }
+  };
+
+  const handleEdit = async () => {
+    if (!generatedWebsite?.id || !addOnPrompt.trim()) return;
+    const userId = (user as any)?.id ?? (user as any)?._id ?? undefined;
+    setEditLoading(true);
+    try {
+      const res = await api.post<GeneratedWebsite & { message?: string; previewUrl?: string }>(
+        `/website/${generatedWebsite.id}/edit`,
+        { editPrompt: addOnPrompt.trim(), userId },
+        { timeout: 300000 }
+      );
+      const nextId = res.data.id || generatedWebsite.id;
+      setGeneratedWebsite({ ...res.data, id: nextId });
+      setAddOnPrompt('');
+      if (res.data.previewUrl) {
+        const separator = res.data.previewUrl.includes('?') ? '&' : '?';
+        setRealPreviewUrl(`${res.data.previewUrl}${separator}t=${Date.now()}`);
+        setRealPreviewError(null);
+        setRealPreviewLoading(false);
+        previewUrlFromEditIdRef.current = nextId;
+      } else {
+        setRealPreviewUrl(null);
+        setRealPreviewError(null);
+        setRealPreviewLoading(true);
+      }
+    } catch (error: any) {
+      const msg = error.response?.data?.message || error.message || 'Failed to apply changes';
+      alert(msg);
+    } finally {
+      setEditLoading(false);
     }
   };
 
@@ -409,60 +484,202 @@ const Dashboard = () => {
           </div>
         </div>
       ) : (
-        // Split view after generation starts
+        // Split view after generation starts – left: same input + processing status (v0-style)
         <div className="flex-1 flex gap-6 p-8 overflow-hidden h-full">
-          {/* Left Side - Prompt Section */}
+          {/* Left Side – Input stays visible + 3-line processing status */}
           <div className="w-1/2 flex flex-col space-y-6 overflow-y-auto pr-4 h-full">
             <div>
-              <h1 className="text-4xl font-bold mb-2">Welcome back, {user?.name}!</h1>
-              <p className="text-muted-foreground">
-                Describe your website idea and let AI generate it for you.
+              <h1 className="text-2xl md:text-3xl font-bold mb-1">
+                {generatedWebsite
+                  ? generatedWebsite.websiteName
+                  : loadingHistoryWebsite
+                    ? 'Loading...'
+                    : 'Generating your website'}
+              </h1>
+              <p className="text-muted-foreground text-sm">
+                {generatedWebsite
+                  ? 'Edit the prompt below to generate again.'
+                  : loadingHistoryWebsite
+                    ? 'Loading your project from history.'
+                    : 'Your prompt is being processed. Preview will appear on the right.'}
               </p>
             </div>
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Sparkles className="h-5 w-5" />
-                  Generate Website
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div>
-                  <label className="text-sm font-medium mb-2 block">Website Name</label>
-                  <input
-                    type="text"
-                    value={websiteName}
-                    onChange={(e) => setWebsiteName(e.target.value)}
-                    placeholder="My Awesome Website"
-                    className="w-full px-4 py-2 rounded-lg border border-border bg-input text-foreground placeholder:text-muted-foreground transition-all duration-200 focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
-                  />
-                </div>
-                <div>
-                  <label className="text-sm font-medium mb-2 block">Describe your website</label>
-                  <textarea
-                    value={prompt}
-                    onChange={(e) => setPrompt(e.target.value)}
-                    placeholder="e.g., Create a modern landing page for a tech startup with a hero section, features, and contact form..."
-                    className="w-full px-4 py-3 rounded-lg border border-border bg-input text-foreground placeholder:text-muted-foreground min-h-[200px] resize-none transition-all duration-200 focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
-                    rows={6}
-                  />
-                </div>
-                <Button
-                  onClick={handleGenerate}
-                  disabled={loading || !prompt.trim()}
-                  className="w-full"
-                  size="lg"
-                >
-                  {loading ? (
-                    'Generating...'
-                  ) : (
-                    <>
-                      <Send className="mr-2 h-4 w-4" />
-                      Generate Website
-                    </>
+            {/* Website Name + Describe your website – only while generating/loading; removed once website is generated */}
+            {!generatedWebsite && (
+              <div className="space-y-3">
+                <label className="text-sm font-medium block">Website Name (optional)</label>
+                <input
+                  type="text"
+                  value={websiteName}
+                  onChange={(e) => setWebsiteName(e.target.value)}
+                  placeholder="My Awesome Website"
+                  disabled={loading}
+                  className="w-full px-4 py-2 rounded-lg border border-border bg-input text-foreground placeholder:text-muted-foreground transition-all duration-200 focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-60"
+                />
+                <label className="text-sm font-medium block">Describe your website</label>
+                <textarea
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  placeholder="e.g., Create a modern landing page for a tech startup..."
+                  disabled={loading}
+                  rows={4}
+                  className="w-full px-4 py-3 rounded-lg border border-border bg-input text-foreground placeholder:text-muted-foreground resize-none transition-all duration-200 focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-60"
+                />
+              </div>
+            )}
+
+            {/* After generation: only chat (Original + edits) + add-on input */}
+            {generatedWebsite && (
+              <div className="space-y-3">
+                {/* Chat message history (v0-style) */}
+                {chatMessages.length > 0 && (
+                  <div className="space-y-2 max-h-[200px] overflow-y-auto pr-1">
+                    {chatMessages.map((msg, i) => (
+                      <div
+                        key={i}
+                        className="rounded-xl border border-border bg-muted/40 px-3 py-2.5 text-sm text-foreground"
+                      >
+                        <span className="text-muted-foreground text-xs font-medium">
+                          {i === 0 ? 'Original' : `Edit ${i}`}
+                        </span>
+                        <p className="mt-1 break-words">{msg}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Same input as dashboard: Attach, Templates, Generate */}
+                <div
+                  className={cn(
+                    'relative rounded-2xl border bg-card p-1 transition-all duration-300',
+                    'border-border'
                   )}
-                </Button>
+                >
+                  <div className="relative">
+                    <textarea
+                      value={addOnPrompt}
+                      onChange={(e) => setAddOnPrompt(e.target.value)}
+                      placeholder="Describe changes... e.g., Make the header blue, add a contact form"
+                      disabled={editLoading || loading}
+                      rows={3}
+                      className="w-full resize-none rounded-xl bg-transparent px-4 py-4 text-foreground placeholder:text-muted-foreground focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                    />
+                  </div>
+                  <div className="flex items-center justify-between px-3 pb-3">
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={editLoading || loading}
+                        className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground transition-all duration-200 hover:bg-secondary hover:text-foreground active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <Paperclip className="h-4 w-4" />
+                        <span className="hidden sm:inline">Attach</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={editLoading || loading}
+                        className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground transition-all duration-200 hover:bg-secondary hover:text-foreground active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <Wand2 className="h-4 w-4" />
+                        <span className="hidden sm:inline">Templates</span>
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleEdit}
+                      disabled={!addOnPrompt.trim() || editLoading || loading}
+                      className={cn(
+                        'flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all duration-200',
+                        addOnPrompt.trim() && !editLoading && !loading
+                          ? 'bg-primary text-primary-foreground hover:bg-primary/90 active:scale-95'
+                          : 'bg-secondary text-muted-foreground cursor-not-allowed'
+                      )}
+                    >
+                      {editLoading ? (
+                        <>
+                          <Sparkles className="h-4 w-4 animate-pulse" />
+                          <span>Generating...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="h-4 w-4" />
+                          <span>Generate</span>
+                          <Send className="h-4 w-4" />
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Suggestions (same style as dashboard) */}
+                {!editLoading && !loading && (
+                  <div className="flex flex-wrap gap-2">
+                    {editSuggestions.map((suggestion) => (
+                      <button
+                        key={suggestion}
+                        type="button"
+                        onClick={() => setAddOnPrompt(suggestion)}
+                        className="rounded-full border border-border bg-card/50 px-4 py-2 text-sm text-muted-foreground transition-all duration-200 hover:border-accent/50 hover:bg-card hover:text-foreground active:scale-95"
+                      >
+                        {suggestion}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Processing status – 3 lines (v0-style) */}
+            <Card className="border-accent/30 bg-accent/5">
+              <CardContent className="pt-4 pb-4 space-y-2">
+                <div className="flex items-center gap-2 text-sm">
+                  {generationStep === 'done' ? (
+                    <span className="text-green-500">✓</span>
+                  ) : generationStep === 'thinking' ? (
+                    <span className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <span className="text-green-500">✓</span>
+                  )}
+                  <span className={generationStep === 'thinking' && !generatedWebsite ? 'text-foreground font-medium' : 'text-muted-foreground'}>
+                    {generationStep === 'done' ? 'Thinking' : 'Thinking...'}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 text-sm">
+                  {generationStep === 'done' || generationStep === 'generating' ? (
+                    generationStep === 'done' ? (
+                      <span className="text-green-500">✓</span>
+                    ) : (
+                      <span className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+                    )
+                  ) : (
+                    <span className="w-4 h-4 rounded-full border border-muted-foreground/40" />
+                  )}
+                  <span className={(generationStep === 'generating' && !generatedWebsite) || generationStep === 'done' ? 'text-foreground font-medium' : 'text-muted-foreground'}>
+                    {generationStep === 'done' ? 'Files generated' : generationStep === 'generating' ? 'Generating files...' : 'Generating files'}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 text-sm">
+                  {(() => {
+                    const needsBuild = generatedWebsite?.components && generatedWebsite.components.length > 0 && !showCodeView;
+                    const buildingPreview = needsBuild && realPreviewLoading;
+                    const previewReady = generatedWebsite && !buildingPreview;
+                    return (
+                      <>
+                        {previewReady ? (
+                          <span className="text-green-500">✓</span>
+                        ) : buildingPreview ? (
+                          <span className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+                        ) : (
+                          <span className="w-4 h-4 rounded-full border border-muted-foreground/40" />
+                        )}
+                        <span className={previewReady ? 'text-foreground font-medium' : 'text-muted-foreground'}>
+                          {previewReady ? 'Preview ready' : buildingPreview ? 'Building preview...' : 'Rendering preview...'}
+                        </span>
+                      </>
+                    );
+                  })()}
+                </div>
               </CardContent>
             </Card>
           </div>

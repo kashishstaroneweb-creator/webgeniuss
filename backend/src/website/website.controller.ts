@@ -4,6 +4,7 @@ import { WebsiteService } from './website.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { GenerateWebsiteDto } from './dto/generate-website.dto';
+import { EditWebsiteDto } from './dto/edit-website.dto';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -131,6 +132,31 @@ export class WebsiteController {
       throw new HttpException({ message: 'Not found', statusCode: 404 }, HttpStatus.NOT_FOUND);
     }
     res.sendFile(filePath);
+  }
+
+  @Post(':id/edit')
+  async editWebsite(
+    @Param('id') websiteId: string,
+    @Body() editDto: EditWebsiteDto,
+  ) {
+    const userId = editDto.userId || '691df5ddac69fc46beca44b3';
+    try {
+      const result = await this.websiteService.editWebsite(
+        websiteId,
+        userId,
+        editDto.editPrompt,
+      );
+      return result;
+    } catch (error: any) {
+      const message = error?.message || 'Unknown error during edit';
+      const status = error?.status || HttpStatus.INTERNAL_SERVER_ERROR;
+      console.error('WebsiteController.editWebsite - Error:', message, error?.stack);
+      throw new HttpException(
+        { message, statusCode: status, error: 'Website edit failed' },
+        status,
+        { cause: error },
+      );
+    }
   }
 
   @Get(':id/preview')

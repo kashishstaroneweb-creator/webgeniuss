@@ -486,6 +486,179 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
   }
 
   /**
+   * Edit an existing website with an add-on prompt (same chat flow).
+   * Loads current site, sends to v0 with edit instruction, parses and sanitizes, updates DB and files.
+   */
+  private static readonly DEFAULT_TEST_USER_ID = '691df5ddac69fc46beca44b3';
+
+  async editWebsite(websiteId: string, userId: string, editPrompt: string) {
+    console.log('WebsiteService.editWebsite - Starting:', { websiteId, userId, editPromptLength: editPrompt.length });
+    const website = await this.websiteRepository.findOne({
+      where: { _id: new ObjectId(websiteId) } as any,
+    });
+    if (!website) {
+      const err = new Error('Website not found or access denied') as Error & { status?: number };
+      err.status = 404;
+      throw err;
+    }
+    const isOwner = website.userId === userId;
+    const isDefaultTestUserSite = website.userId === WebsiteService.DEFAULT_TEST_USER_ID;
+    if (!isOwner && !isDefaultTestUserSite) {
+      const err = new Error('Website not found or access denied') as Error & { status?: number };
+      err.status = 404;
+      throw err;
+    }
+    if (isDefaultTestUserSite && userId !== WebsiteService.DEFAULT_TEST_USER_ID) {
+      website.userId = userId;
+      await this.websiteRepository.save(website);
+    }
+
+    const isComponentBased = (website.components?.length ?? 0) > 0;
+    const model = process.env.V0_MODEL || 'v0-1.5-lg';
+
+    const editSystemPrompt = isComponentBased
+      ? `You are an expert editor for React/Vite websites. You will receive the CURRENT website as a JSON object with "components" (array of { name, type, path, code, language }) and "viteConfig" (object with packageJson, viteConfig, indexHtml, mainJsx, styleCss). The user will give you ONE edit instruction. Your job is to return the COMPLETE updated website in the EXACT SAME JSON structure. Rules:
+- Return ONLY valid JSON. No markdown, no explanation, no code blocks. Pure JSON starting with { and ending with }.
+- Change ONLY what the user asked. Keep all other components and config identical.
+- Preserve component names, paths, and file structure unless the user explicitly asks to add/rename/remove.
+- If adding new components, add them to the components array and update mainJsx to import and render them.
+- Keep the same code style and patterns. Do not strip or simplify existing code.
+- Output the full JSON: { "components": [...], "viteConfig": { ... } }.`
+      : `You are an expert editor for HTML/CSS/JS websites. You will receive the CURRENT website as HTML, CSS, and JS. The user will give you ONE edit instruction. Return a JSON object with "html", "css", "js" containing the FULL updated code. Rules:
+- Return ONLY valid JSON: { "html": "...", "css": "...", "js": "..." }. No markdown, no explanation.
+- Change ONLY what the user asked. Keep everything else identical.
+- Escape strings for JSON (newlines as \\n, quotes escaped).`;
+
+    const userMessage = isComponentBased
+      ? `Current website (JSON):\n${JSON.stringify({ components: website.components || [], viteConfig: website.viteConfig || {} })}\n\nUser edit request: ${editPrompt}`
+      : `Current HTML:\n${website.htmlCode || ''}\n\nCurrent CSS:\n${website.cssCode || ''}\n\nCurrent JS:\n${website.jsCode || ''}\n\nUser edit request: ${editPrompt}`;
+
+    let responseContent: string = '{}';
+    const completion = await this.openai.chat.completions.create({
+      model,
+      messages: [
+        { role: 'system', content: editSystemPrompt },
+        { role: 'user', content: userMessage },
+      ],
+      temperature: 0.5,
+      max_tokens: 32768,
+    });
+    responseContent = completion.choices[0]?.message?.content || '{}';
+
+    let websiteCode = this.parseV0Response(responseContent);
+    if (!websiteCode) {
+      websiteCode = this.extractCodeFromResponse(responseContent);
+    }
+    if (websiteCode?.files && Array.isArray(websiteCode.files)) {
+      websiteCode = this.convertV0FilesToStructure(websiteCode);
+    }
+
+    const getPlaceholderUrl = await this.buildPlaceholderUrlGetter(website.websiteName || '', website.prompt || editPrompt);
+    const sanitizeCode = (raw: string) =>
+      this.sanitizeInvalidConditionAssignment(
+        this.sanitizeJsxDollarInterpolation(this.transformJsxAttributeTemplateLiterals(raw)),
+      );
+
+    if (websiteCode?.components?.length) {
+      for (let i = 0; i < websiteCode.components.length; i++) {
+        let code = sanitizeCode(websiteCode.components[i].code || '');
+        code = await this.validateAndReplaceBrokenImageUrls(code, getPlaceholderUrl);
+        code = this.replaceBrokenImageUrls(code);
+        websiteCode.components[i].code = this.wrapAdjacentJsxInFragment(code);
+      }
+    }
+    if (websiteCode?.viteConfig?.mainJsx) {
+      let main = sanitizeCode(websiteCode.viteConfig.mainJsx);
+      main = await this.validateAndReplaceBrokenImageUrls(main, getPlaceholderUrl);
+      main = this.replaceBrokenImageUrls(main);
+      websiteCode.viteConfig.mainJsx = this.wrapAdjacentJsxInFragment(main);
+    }
+    if (websiteCode?.viteConfig?.mainJs) {
+      let main = sanitizeCode(websiteCode.viteConfig.mainJs);
+      main = await this.validateAndReplaceBrokenImageUrls(main, getPlaceholderUrl);
+      main = this.replaceBrokenImageUrls(main);
+      websiteCode.viteConfig.mainJs = this.wrapAdjacentJsxInFragment(main);
+    }
+    if (websiteCode?.html) {
+      websiteCode.html = await this.validateAndReplaceBrokenImageUrls(websiteCode.html, getPlaceholderUrl);
+      websiteCode.html = this.replaceBrokenImageUrls(websiteCode.html);
+    }
+    if (websiteCode?.css) websiteCode.css = this.replaceBrokenImageUrls(websiteCode.css);
+    if (websiteCode?.js) {
+      websiteCode.js = await this.validateAndReplaceBrokenImageUrls(websiteCode.js, getPlaceholderUrl);
+      websiteCode.js = this.replaceBrokenImageUrls(websiteCode.js);
+    }
+
+    const componentNamesForStrip = (websiteCode?.components || []).map((c: any) => (c.name || '').replace(/\s+/g, ''));
+    if (componentNamesForStrip.length > 0 && websiteCode?.viteConfig) {
+      const stripPlaceholders = (code: string) => {
+        let out = code;
+        componentNamesForStrip.forEach((name: string) => {
+          if (!name) return;
+          out = out.replace(new RegExp(`const\\s+${name}\\s*=\\s*\\[\\]\\s*;?\\s*`, 'g'), '');
+        });
+        return out;
+      };
+      if (websiteCode.viteConfig.mainJsx) websiteCode.viteConfig.mainJsx = stripPlaceholders(websiteCode.viteConfig.mainJsx);
+      if (websiteCode.viteConfig.mainJs) websiteCode.viteConfig.mainJs = stripPlaceholders(websiteCode.viteConfig.mainJs);
+    }
+
+    const components = websiteCode.components || [];
+    const viteConfig = websiteCode.viteConfig || null;
+    const htmlCode = websiteCode.html || websiteCode.HTML || website.htmlCode || '<div>Generated Website</div>';
+    const cssCode = websiteCode.css || websiteCode.CSS || website.cssCode || 'body { margin: 0; padding: 0; }';
+    const jsCode = websiteCode.js || websiteCode.JS || websiteCode.javascript || website.jsCode || '// JavaScript code';
+
+    const hasValidCode =
+      components.length > 0 ||
+      (htmlCode !== '<div>Generated Website</div>' || cssCode !== 'body { margin: 0; padding: 0; }');
+    if (!hasValidCode) {
+      const err = new Error('The AI did not return valid website code for the edit. Try rephrasing your request.') as Error & { status?: number };
+      err.status = 422;
+      throw err;
+    }
+
+    if (components.length > 0) {
+      website.components = components;
+      website.viteConfig = viteConfig || website.viteConfig;
+      website.htmlCode = '';
+      website.cssCode = '';
+      website.jsCode = '';
+    } else {
+      website.htmlCode = htmlCode;
+      website.cssCode = cssCode;
+      website.jsCode = jsCode;
+    }
+    website.prompt = (website.prompt || '') + '\n[Edit] ' + editPrompt;
+    const savedWebsite = await this.websiteRepository.save(website);
+
+    let previewUrl: string | undefined;
+    if (components.length > 0) {
+      const buildResult = await this.getPreviewUrl(websiteId, userId);
+      if (buildResult.success === true) {
+        previewUrl = buildResult.previewUrl;
+      } else {
+        console.warn('WebsiteService.editWebsite - Preview build failed after edit:', buildResult.error, buildResult.log);
+      }
+    } else {
+      await this.saveWebsiteFiles(userId, websiteId, htmlCode, cssCode, jsCode);
+    }
+
+    console.log('WebsiteService.editWebsite - Success, website ID:', websiteId);
+    return {
+      ...savedWebsite,
+      id: savedWebsite.id.toString(),
+      components: components.length > 0 ? components : savedWebsite.components,
+      viteConfig: components.length > 0 ? viteConfig : savedWebsite.viteConfig,
+      htmlCode: savedWebsite.htmlCode,
+      cssCode: savedWebsite.cssCode,
+      jsCode: savedWebsite.jsCode,
+      message: 'Website updated successfully',
+      ...(previewUrl && { previewUrl }),
+    };
+  }
+
+  /**
    * Enhances user prompts by automatically adding design and functionality requirements
    * If the prompt is already detailed, it preserves all details and adds production-ready requirements
    * If minimal, it's enhanced with comprehensive requirements
