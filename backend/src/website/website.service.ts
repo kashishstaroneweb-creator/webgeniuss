@@ -4,7 +4,7 @@ import { Repository } from 'typeorm';
 import { Website } from '../entities/website.entity';
 import { PromptHistory } from '../entities/prompt-history.entity';
 import { ObjectId } from 'mongodb';
-import OpenAI from 'openai';
+import { createClient, type ChatDetail, type ChatsCreateRequest } from 'v0-sdk';
 import * as fs from 'fs';
 import * as path from 'path';
 import { exec } from 'child_process';
@@ -15,7 +15,28 @@ const execAsync = promisify(exec);
 
 @Injectable()
 export class WebsiteService {
-  private openai: OpenAI;
+  /** Official v0 Platform client — same as `import { v0 } from 'v0-sdk'` but honors `V0_API_URL` and explicit `apiKey` (default `v0` only reads `V0_API_KEY`). */
+  private readonly v0Platform: ReturnType<typeof createClient>;
+
+  /**
+   * Trim, strip BOM/quotes, remove accidental `Bearer ` prefix, and strip invisible /
+   * line-break characters (common when copying from the v0 key UI or PDF).
+   */
+  private static normalizeV0ApiKey(raw: string | undefined): string | undefined {
+    if (raw == null) return undefined;
+    let s = raw.replace(/^\uFEFF/, '');
+    s = s.replace(/\r/g, '');
+    s = s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u200B-\u200D\u2060\uFEFF]/g, '');
+    s = s.trim();
+    if (
+      (s.startsWith('"') && s.endsWith('"')) ||
+      (s.startsWith("'") && s.endsWith("'"))
+    ) {
+      s = s.slice(1, -1).trim();
+    }
+    if (/^bearer\s+/i.test(s)) s = s.replace(/^bearer\s+/i, '').trim();
+    return s || undefined;
+  }
 
   constructor(
     @InjectRepository(Website)
@@ -23,24 +44,71 @@ export class WebsiteService {
     @InjectRepository(PromptHistory)
     private promptRepository: Repository<PromptHistory>,
   ) {
-    // Configure OpenAI client to use v0 API endpoint
-    // v0 API is OpenAI-compatible, so we can use the same SDK
-    this.openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY, // Using OPENAI_API_KEY env var for v0 API key
-      baseURL: 'https://api.v0.dev/v1', // v0 API endpoint
+    const v0Key = WebsiteService.normalizeV0ApiKey(process.env.V0_API_KEY);
+    const legacyAlias = WebsiteService.normalizeV0ApiKey(process.env.OPENAI_API_KEY);
+    const apiKey = v0Key || legacyAlias;
+    if (apiKey) process.env.V0_API_KEY = apiKey;
+    const baseUrl = (process.env.V0_API_URL || 'https://api.v0.dev/v1').replace(/\/+$/, '');
+    this.v0Platform = createClient({
+      apiKey: apiKey || undefined,
+      baseUrl,
     });
+    if (process.env.V0_DEBUG_AUTH === '1') {
+      console.log('WebsiteService - V0_DEBUG_AUTH: key length=', apiKey?.length ?? 0, 'baseUrl=', baseUrl);
+    }
+  }
+
+  async getV0Health() {
+    const key = WebsiteService.normalizeV0ApiKey(process.env.V0_API_KEY);
+    const baseUrl = (process.env.V0_API_URL || 'https://api.v0.dev/v1').replace(/\/+$/, '');
+    const keyPreview = key ? `${key.slice(0, 4)}...${key.slice(-4)}` : null;
+
+    try {
+      const [user, plan] = await Promise.all([
+        this.v0Platform.user.get(),
+        this.v0Platform.user.getPlan(),
+      ]);
+      return {
+        ok: true,
+        statusCode: 200,
+        baseUrl,
+        keyConfigured: !!key,
+        keyPreview,
+        user: {
+          id: user.id,
+          email: user.email,
+        },
+        plan,
+      };
+    } catch (error: any) {
+      const msg = String(error?.message || error || '');
+      const m = msg.match(/HTTP\s+(\d{3})/i);
+      const statusCode = m ? Number(m[1]) : 500;
+      return {
+        ok: false,
+        statusCode,
+        baseUrl,
+        keyConfigured: !!key,
+        keyPreview,
+        error: msg,
+      };
+    }
   }
 
   async generateWebsite(userId: string, prompt: string, websiteName: string) {
     console.log('WebsiteService.generateWebsite - Starting:', { userId, websiteName, promptLength: prompt.length });
     try {
-      console.log('WebsiteService.generateWebsite - Calling v0 API...');
-      console.log('WebsiteService.generateWebsite - v0 API Key:', process.env.OPENAI_API_KEY ? 'SET' : 'NOT SET');
-      
-      // Use v0 models: v0-1.5-lg for advanced thinking and production-quality output
-      // v0-1.5-md is for everyday tasks, v0-1.5-lg is for advanced reasoning
-      const model = process.env.V0_MODEL || 'v0-1.5-lg';
-      
+      console.log('WebsiteService.generateWebsite - Calling v0 Platform API...');
+      console.log(
+        'WebsiteService.generateWebsite - v0 API Key:',
+        WebsiteService.normalizeV0ApiKey(process.env.V0_API_KEY) ? 'SET' : 'NOT SET',
+      );
+      console.log(
+        'WebsiteService.generateWebsite - v0 model config:',
+        JSON.stringify(this.getV0ModelConfiguration() ?? '(platform default)'),
+      );
+      console.log('WebsiteService.generateWebsite - v0 response mode:', this.getV0ResponseMode());
+
       // Enhanced system prompt optimized for v0 API - v0 specializes in production-ready React components
       const systemPrompt = `You are v0, an expert AI specialized in generating PRODUCTION-READY, enterprise-grade React components and websites. Your expertise is in creating stunning, modern web applications with Vite + React that look like they were built by top-tier agencies. Generate a component-based architecture following React and Vite best practices.
 
@@ -250,79 +318,13 @@ DO NOT use document.createElement, innerHTML, or jsx() helper. ONLY use React JS
 
 For dynamic class names use: className={'base-class ' + (condition ? 'active' : '')} never className={\`base-class \${expr}\`}.`;
 
-      // Preserve the full user prompt - enhance it but keep all details
-      const userPrompt = this.enhanceUserPrompt(prompt);
+      // Use raw prompt as requested (no automatic prompt enhancement).
+      const userPrompt = (prompt || '').trim();
 
-      console.log('WebsiteService.generateWebsite - Using model:', model);
       console.log('WebsiteService.generateWebsite - Original prompt length:', prompt.length);
-      console.log('WebsiteService.generateWebsite - Enhanced prompt length:', userPrompt.length);
+      console.log('WebsiteService.generateWebsite - Final prompt length:', userPrompt.length);
 
-      const MAX_V0_ATTEMPTS = Number(process.env.V0_MAX_RETRIES) || 3;
-      const RETRY_DELAY_MS = 1500;
-      const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-      let responseContent: string = '{}';
-      let websiteCode: any = null;
-
-      for (let attempt = 1; attempt <= MAX_V0_ATTEMPTS; attempt++) {
-        console.log('WebsiteService.generateWebsite - v0 API attempt', attempt, 'of', MAX_V0_ATTEMPTS);
-
-        const completion = await this.openai.chat.completions.create({
-          model: model,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt },
-          ],
-          temperature: 0.7,
-          max_tokens: 32768,
-        });
-
-        responseContent = completion.choices[0]?.message?.content || '{}';
-        console.log('WebsiteService.generateWebsite - v0 API Response length:', responseContent.length, '| first 500 chars:', responseContent.substring(0, 500));
-
-        if (this.isRefusalResponse(responseContent)) {
-          console.warn('WebsiteService.generateWebsite - v0 API refusal on attempt', attempt);
-          if (attempt < MAX_V0_ATTEMPTS) {
-            console.log('WebsiteService.generateWebsite - Retrying in', RETRY_DELAY_MS, 'ms...');
-            await delay(RETRY_DELAY_MS);
-            continue;
-          }
-          const msg = 'The AI declined to generate this website after ' + MAX_V0_ATTEMPTS + ' attempts. Try rephrasing your prompt (e.g. avoid sensitive topics, use clearer wording, or break the request into smaller steps).';
-          const err = new Error(msg) as Error & { status?: number };
-          err.status = 422;
-          throw err;
-        }
-
-        websiteCode = this.parseV0Response(responseContent);
-        if (!websiteCode) {
-          console.warn('WebsiteService.generateWebsite - Parse failed, trying code extraction');
-          websiteCode = this.extractCodeFromResponse(responseContent);
-        }
-        if (websiteCode?.files && Array.isArray(websiteCode.files)) {
-          websiteCode = this.convertV0FilesToStructure(websiteCode);
-        }
-
-        const hasValidCode =
-          (websiteCode?.components?.length > 0) ||
-          (websiteCode?.files?.length > 0) ||
-          (websiteCode?.html && websiteCode.html !== '<div>Generated Website</div>');
-        if (hasValidCode) {
-          console.log('WebsiteService.generateWebsite - Valid code received on attempt', attempt);
-          break;
-        }
-
-        console.warn('WebsiteService.generateWebsite - No valid code on attempt', attempt);
-        if (attempt < MAX_V0_ATTEMPTS) {
-          console.log('WebsiteService.generateWebsite - Retrying in', RETRY_DELAY_MS, 'ms...');
-          await delay(RETRY_DELAY_MS);
-          continue;
-        }
-        const err = new Error(
-          'The AI did not return valid website code after ' + MAX_V0_ATTEMPTS + ' attempts. Try rephrasing your prompt or simplifying the request.',
-        ) as Error & { status?: number };
-        err.status = 422;
-        throw err;
-      }
+      const { responseContent, websiteCode } = await this.fetchWebsiteCodeFromV0(systemPrompt, userPrompt);
 
       // Sanitize JSX and fix images: validate image URLs (HEAD), replace 404s with a relevant image (Unsplash by site theme, else Picsum), then replace imgur
       const getPlaceholderUrl = await this.buildPlaceholderUrlGetter(websiteName || '', prompt);
@@ -403,7 +405,13 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
         legacyMode: components.length === 0
       });
       
-      if (components.length === 0 && htmlCode === '<div>Generated Website</div>' && cssCode === 'body { margin: 0; padding: 0; }') {
+      const hasViteAppCode = !!(viteConfig?.mainJsx || viteConfig?.mainJs);
+      if (
+        components.length === 0 &&
+        !hasViteAppCode &&
+        htmlCode === '<div>Generated Website</div>' &&
+        cssCode === 'body { margin: 0; padding: 0; }'
+      ) {
         console.error('WebsiteService.generateWebsite - No valid code from v0 API; refusing to save placeholder.');
         const err = new Error(
           'The AI did not return valid website code. You may have hit a content limit or the request may have been refused. Try rephrasing your prompt or simplifying the request.',
@@ -473,12 +481,48 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       
       // Provide more helpful error messages for v0 API
       if (error.message.includes('401') || error.message.includes('Incorrect API key')) {
-        throw new Error(`Failed to generate website: Invalid v0 API key. Please check your OPENAI_API_KEY environment variable contains a valid v0 API key from https://v0.app`);
+        const err = new Error(
+          `Failed to generate website: v0 Platform API returned 401 (Unauthorized). Use an active API key from https://v0.app/chat/settings/keys (Platform API access; paid plan may be required). Paste the full secret once, no quotes or "Bearer ". Remove any OPENAI_API_KEY that is not a v0 key so it does not override. If the key was shared publicly, revoke it and create a new one.`,
+        ) as Error & { status?: number };
+        err.status = 401;
+        throw err;
+      }
+      if (error.message.includes('404')) {
+        const isChatNotFound = /chat_not_found/i.test(error.message);
+        const err = new Error(
+          isChatNotFound
+            ? `Failed to generate website: v0 returned chat_not_found while polling async generation. This is usually transient; retry once, or set V0_RESPONSE_MODE=sync if it keeps happening.`
+            : `Failed to generate website: v0 API returned 404. Confirm V0_API_URL (default https://api.v0.dev/v1) and that your account has Platform API access — see https://v0.app/docs/api/platform/quickstart`,
+        ) as Error & { status?: number };
+        err.status = isChatNotFound ? 502 : 404;
+        throw err;
       }
       
       // Handle Premium/Team plan requirement
       if (error.message.includes('403') || error.message.includes('Premium or Team plan')) {
-        throw new Error(`Failed to generate website: v0 API requires a Premium or Team plan. Your API key is valid, but your account needs to be upgraded. Please visit https://v0.app/chat/settings/billing to upgrade your plan.`);
+        const err = new Error(
+          `Failed to generate website: v0 API requires a Premium or Team plan. Your API key is valid, but your account needs to be upgraded. Please visit https://v0.app/chat/settings/billing to upgrade your plan.`,
+        ) as Error & { status?: number };
+        err.status = 403;
+        throw err;
+      }
+      if (error.message.includes('UND_ERR_HEADERS_TIMEOUT') || error.message.includes('Headers Timeout Error')) {
+        const err = new Error(
+          `Failed to generate website: v0 timed out while starting generation. Try again, simplify the prompt, or use V0_RESPONSE_MODE=async (recommended).`,
+        ) as Error & { status?: number };
+        err.status = 504;
+        throw err;
+      }
+      if (
+        error.message.includes('ENOTFOUND') ||
+        error.message.includes('UND_ERR_CONNECT_TIMEOUT') ||
+        error.message.includes('ETIMEDOUT')
+      ) {
+        const err = new Error(
+          `Failed to generate website: network/DNS issue while connecting to api.v0.dev. Your machine can reach the v0 IP, but DNS resolution appears unstable. Switch system DNS to a public resolver (1.1.1.1 or 8.8.8.8), restart your network adapter, then restart backend and retry.`,
+        ) as Error & { status?: number };
+        err.status = 503;
+        throw err;
       }
       
       throw new Error(`Failed to generate website: ${error.message}`);
@@ -514,7 +558,6 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     }
 
     const isComponentBased = (website.components?.length ?? 0) > 0;
-    const model = process.env.V0_MODEL || 'v0-1.5-lg';
 
     const editSystemPrompt = isComponentBased
       ? `You are an expert editor for React/Vite websites. You will receive the CURRENT website as a JSON object with "components" (array of { name, type, path, code, language }) and "viteConfig" (object with packageJson, viteConfig, indexHtml, mainJsx, styleCss). The user will give you ONE edit instruction. Your job is to return the COMPLETE updated website in the EXACT SAME JSON structure. Rules:
@@ -533,25 +576,8 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       ? `Current website (JSON):\n${JSON.stringify({ components: website.components || [], viteConfig: website.viteConfig || {} })}\n\nUser edit request: ${editPrompt}`
       : `Current HTML:\n${website.htmlCode || ''}\n\nCurrent CSS:\n${website.cssCode || ''}\n\nCurrent JS:\n${website.jsCode || ''}\n\nUser edit request: ${editPrompt}`;
 
-    let responseContent: string = '{}';
-    const completion = await this.openai.chat.completions.create({
-      model,
-      messages: [
-        { role: 'system', content: editSystemPrompt },
-        { role: 'user', content: userMessage },
-      ],
-      temperature: 0.5,
-      max_tokens: 32768,
-    });
-    responseContent = completion.choices[0]?.message?.content || '{}';
-
-    let websiteCode = this.parseV0Response(responseContent);
-    if (!websiteCode) {
-      websiteCode = this.extractCodeFromResponse(responseContent);
-    }
-    if (websiteCode?.files && Array.isArray(websiteCode.files)) {
-      websiteCode = this.convertV0FilesToStructure(websiteCode);
-    }
+    const { websiteCode: websiteCodeRaw } = await this.fetchWebsiteCodeFromV0(editSystemPrompt, userMessage);
+    let websiteCode = websiteCodeRaw;
 
     const getPlaceholderUrl = await this.buildPlaceholderUrlGetter(website.websiteName || '', website.prompt || editPrompt);
     const sanitizeCode = (raw: string) =>
@@ -611,6 +637,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
 
     const hasValidCode =
       components.length > 0 ||
+      !!(viteConfig?.mainJsx || viteConfig?.mainJs) ||
       (htmlCode !== '<div>Generated Website</div>' || cssCode !== 'body { margin: 0; padding: 0; }');
     if (!hasValidCode) {
       const err = new Error('The AI did not return valid website code for the edit. Try rephrasing your request.') as Error & { status?: number };
@@ -1170,6 +1197,282 @@ DESIGN (MANDATORY - PRODUCTION-READY):
     return code.replace(/>([^<]*?)\$\{([^}]+)\}([^<]*?)</g, (_match, before, expr, after) =>
       `>${before}{'$' + ${expr}}${after}<`
     );
+  }
+
+  /** Optional; omit to use v0 platform default. Set V0_PLATFORM_MODEL_ID to v0-auto | v0-mini | v0-pro | v0-max | v0-max-fast. */
+  private getV0ModelConfiguration(): ChatsCreateRequest['modelConfiguration'] | undefined {
+    const explicit = (process.env.V0_PLATFORM_MODEL_ID || '').trim();
+    const allowed = ['v0-auto', 'v0-mini', 'v0-pro', 'v0-max', 'v0-max-fast'] as const;
+    if (allowed.includes(explicit as (typeof allowed)[number])) {
+      return { modelId: explicit as (typeof allowed)[number] };
+    }
+    return undefined;
+  }
+
+  /**
+   * Prefer `sync` to avoid post-create polling races (e.g. transient chat_not_found).
+   * You can still force async with V0_RESPONSE_MODE=async.
+   */
+  private getV0ResponseMode(): 'sync' | 'async' {
+    return (process.env.V0_RESPONSE_MODE || 'sync').toLowerCase() === 'async' ? 'async' : 'sync';
+  }
+
+  private getV0ApiKeyOrThrow(): string {
+    const key = WebsiteService.normalizeV0ApiKey(process.env.V0_API_KEY);
+    if (!key) {
+      throw new Error('V0_API_KEY is not configured.');
+    }
+    return key;
+  }
+
+  private getV0BaseUrl(): string {
+    return (process.env.V0_API_URL || 'https://api.v0.dev/v1').replace(/\/+$/, '');
+  }
+
+  private async createV0ChatWithAxios(
+    body: ChatsCreateRequest,
+    timeoutMs = Number(process.env.V0_CREATE_TIMEOUT_MS) || 300000,
+  ): Promise<ChatDetail> {
+    const res = await axios.post<ChatDetail>(`${this.getV0BaseUrl()}/chats`, body, {
+      headers: {
+        Authorization: `Bearer ${this.getV0ApiKeyOrThrow()}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: timeoutMs,
+    });
+    return res.data;
+  }
+
+  async runV0ChatCheck(message: string, system?: string) {
+    const startedAt = Date.now();
+    const body: ChatsCreateRequest = {
+      message: message || 'make a red button',
+      responseMode: this.getV0ResponseMode(),
+    };
+    if (system) body.system = system;
+
+    try {
+      const chat = await this.createV0ChatWithAxios(body);
+      return {
+        ok: true,
+        statusCode: 200,
+        elapsedMs: Date.now() - startedAt,
+        mode: body.responseMode,
+        chatId: chat.id,
+        fileCount: chat.latestVersion?.files?.length ?? 0,
+      };
+    } catch (error: any) {
+      const msg = String(error?.response?.data ? JSON.stringify(error.response.data) : (error?.message || error));
+      const statusCode = Number(error?.response?.status) || Number((msg.match(/HTTP\s+(\d{3})/i) || [])[1]) || 500;
+      return {
+        ok: false,
+        statusCode,
+        elapsedMs: Date.now() - startedAt,
+        mode: body.responseMode,
+        error: msg,
+      };
+    }
+  }
+
+  private normalizeV0SdkFiles(
+    files: { name: string; content: string }[],
+  ): { path: string; content: string }[] {
+    return files.map((f) => {
+      let p = (f.name || '').trim().replace(/^\/+/, '');
+      if (p.startsWith('src/')) p = p.slice(4);
+      return { path: p, content: f.content || '' };
+    });
+  }
+
+  /** Auth / wrong URL / plan errors will not succeed on retry — fail fast. */
+  private isV0NonRetryableHttpError(err: unknown): boolean {
+    const msg = String((err as Error)?.message || err);
+    if (/\bHTTP 401\b/.test(msg) || /unauthorized_error/i.test(msg)) return true;
+    if (/\bHTTP 403\b/.test(msg) || /forbidden_error/i.test(msg)) return true;
+    // chat_not_found can happen transiently when polling async chats; allow retry.
+    if (/chat_not_found/i.test(msg)) return false;
+    if (/\bHTTP 404\b/.test(msg) || /not_found_error/i.test(msg)) return true;
+    return false;
+  }
+
+  private formatV0NetworkError(err: unknown): string {
+    const e = err as Error & { cause?: unknown; code?: string };
+    const parts = [e?.message || String(err)];
+    const c = e?.cause as NodeJS.ErrnoException | undefined;
+    if (c?.code) parts.push(`cause.code=${c.code}`);
+    if (c?.message && c.message !== e?.message) parts.push(`cause.message=${c.message}`);
+    if (e?.code) parts.push(`code=${e.code}`);
+    return parts.filter(Boolean).join(' | ');
+  }
+
+  /** Generated source files: Platform API returns them on `latestVersion.files` (name + content). */
+  private getV0GeneratedFileRecords(chat: ChatDetail): { name: string; content: string }[] {
+    const list = chat.latestVersion?.files ?? [];
+    return list.map((f) => ({ name: f.name, content: f.content || '' }));
+  }
+
+  private getLastAssistantContent(chat: ChatDetail): string | undefined {
+    const msgs = chat.messages || [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === 'assistant' && msgs[i].content) return msgs[i].content;
+    }
+    return undefined;
+  }
+
+  private serializeChatForHistory(chat: ChatDetail): string {
+    try {
+      const files = (chat.latestVersion?.files || []).map((f) => ({
+        name: f.name,
+        contentLength: (f.content || '').length,
+      }));
+      const payload = { chatId: chat.id, text: chat.text, files };
+      const s = JSON.stringify(payload);
+      return s.length > 500_000 ? s.slice(0, 500_000) + '…' : s;
+    } catch {
+      return chat.text || '';
+    }
+  }
+
+  private async invokeV0ChatCreate(systemPrompt: string, userMessage: string): Promise<ChatDetail> {
+    const modelConfiguration = this.getV0ModelConfiguration();
+    const responseMode = this.getV0ResponseMode();
+    const body: ChatsCreateRequest = {
+      message: userMessage,
+      system: systemPrompt,
+      responseMode,
+    };
+    if (modelConfiguration) body.modelConfiguration = modelConfiguration;
+    console.log(
+      'WebsiteService - waiting for v0 generation (can take 1-3 mins)...',
+      'mode=',
+      responseMode,
+      'promptLength=',
+      userMessage.length,
+    );
+    let result: ChatDetail | ReadableStream;
+    try {
+      result = await this.v0Platform.chats.create(body);
+    } catch (e: any) {
+      const msg = String(e?.message || e || '');
+      if (/UND_ERR_HEADERS_TIMEOUT|UND_ERR_CONNECT_TIMEOUT|ETIMEDOUT|ENOTFOUND/i.test(msg)) {
+        console.warn('WebsiteService - SDK fetch timed out; retrying create via axios with extended timeout...');
+        result = await this.createV0ChatWithAxios(body);
+      } else {
+        throw e;
+      }
+    }
+    console.log('WebsiteService - v0 generation complete, chatId=', (result as ChatDetail)?.id || '(unknown)');
+    if (result != null && typeof (result as ReadableStream).getReader === 'function') {
+      throw new Error(`v0.chats.create returned a stream; expected JSON (responseMode: ${responseMode}).`);
+    }
+    return result as ChatDetail;
+  }
+
+  private websiteCodeFromChatDetail(chat: ChatDetail): any {
+    const filesRaw = this.getV0GeneratedFileRecords(chat);
+    const normalized = this.normalizeV0SdkFiles(filesRaw);
+    if (normalized.length > 0) {
+      return this.convertV0FilesToStructure({
+        files: normalized.map((f) => ({ path: f.path, content: f.content })),
+      });
+    }
+    const textCandidates = [chat.text, this.getLastAssistantContent(chat)].filter(Boolean) as string[];
+    for (const t of textCandidates) {
+      let w = this.parseV0Response(t);
+      if (!w) w = this.extractCodeFromResponse(t);
+      if (w?.files && Array.isArray(w.files)) return this.convertV0FilesToStructure(w);
+      if (w) return w;
+    }
+    return null;
+  }
+
+  private async fetchWebsiteCodeFromV0(
+    systemPrompt: string,
+    userPrompt: string,
+  ): Promise<{ responseContent: string; websiteCode: any }> {
+    const MAX_V0_ATTEMPTS = Number(process.env.V0_MAX_RETRIES) || 3;
+    const RETRY_DELAY_MS = 1500;
+    const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+    let responseContent = '{}';
+    let websiteCode: any = null;
+
+    for (let attempt = 1; attempt <= MAX_V0_ATTEMPTS; attempt++) {
+      console.log('WebsiteService - v0 Platform API attempt', attempt, 'of', MAX_V0_ATTEMPTS);
+      let chat: ChatDetail;
+      try {
+        chat = await this.invokeV0ChatCreate(systemPrompt, userPrompt);
+      } catch (e: any) {
+        console.warn('WebsiteService - v0 request error:', this.formatV0NetworkError(e));
+        if (this.isV0NonRetryableHttpError(e)) {
+          throw e;
+        }
+        if (attempt < MAX_V0_ATTEMPTS) {
+          console.log('WebsiteService - Retrying in', RETRY_DELAY_MS, 'ms...');
+          await delay(RETRY_DELAY_MS);
+          continue;
+        }
+        throw e;
+      }
+
+      responseContent = this.serializeChatForHistory(chat);
+      const refusalText = (chat.text || this.getLastAssistantContent(chat) || '').trim();
+      console.log(
+        'WebsiteService - v0 chat',
+        chat.id,
+        'version',
+        chat.latestVersion?.status,
+        'fileCount',
+        chat.latestVersion?.files?.length ?? 0,
+      );
+
+      if (this.isRefusalResponse(refusalText)) {
+        console.warn('WebsiteService - v0 refusal on attempt', attempt);
+        if (attempt < MAX_V0_ATTEMPTS) {
+          console.log('WebsiteService - Retrying in', RETRY_DELAY_MS, 'ms...');
+          await delay(RETRY_DELAY_MS);
+          continue;
+        }
+        const msg =
+          'The AI declined to generate this website after ' +
+          MAX_V0_ATTEMPTS +
+          ' attempts. Try rephrasing your prompt (e.g. avoid sensitive topics, use clearer wording, or break the request into smaller steps).';
+        const err = new Error(msg) as Error & { status?: number };
+        err.status = 422;
+        throw err;
+      }
+
+      websiteCode = this.websiteCodeFromChatDetail(chat);
+      if (websiteCode?.files && Array.isArray(websiteCode.files)) {
+        websiteCode = this.convertV0FilesToStructure(websiteCode);
+      }
+
+      const hasValidCode =
+        (websiteCode?.components?.length > 0) ||
+        (websiteCode?.files?.length > 0) ||
+        !!(websiteCode?.viteConfig?.mainJsx || websiteCode?.viteConfig?.mainJs) ||
+        (websiteCode?.html && websiteCode.html !== '<div>Generated Website</div>');
+      if (hasValidCode) {
+        console.log('WebsiteService - Valid code received on attempt', attempt);
+        return { responseContent, websiteCode };
+      }
+
+      console.warn('WebsiteService - No valid code on attempt', attempt);
+      if (attempt < MAX_V0_ATTEMPTS) {
+        console.log('WebsiteService - Retrying in', RETRY_DELAY_MS, 'ms...');
+        await delay(RETRY_DELAY_MS);
+        continue;
+      }
+      const err = new Error(
+        'The AI did not return valid website code after ' +
+          MAX_V0_ATTEMPTS +
+          ' attempts. Try rephrasing your prompt or simplifying the request.',
+      ) as Error & { status?: number };
+      err.status = 422;
+      throw err;
+    }
+
+    throw new Error('v0 generation failed after retries');
   }
 
   /**

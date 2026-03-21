@@ -54,6 +54,35 @@ export class WebsiteController {
     return this.websiteService.getUserWebsites(targetUserId);
   }
 
+  @Get('v0-health')
+  async v0Health() {
+    const result = await this.websiteService.getV0Health();
+    if (!result.ok) {
+      throw new HttpException(
+        { message: 'v0 health check failed', ...result },
+        result.statusCode || HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+    return result;
+  }
+
+  @Post('v0-chat-check')
+  async v0ChatCheck(
+    @Body() body: { message?: string; system?: string },
+  ) {
+    const result = await this.websiteService.runV0ChatCheck(
+      body?.message || 'make a red button',
+      body?.system,
+    );
+    if (!result.ok) {
+      throw new HttpException(
+        { message: 'v0 chat check failed', ...result },
+        result.statusCode || HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+    return result;
+  }
+
   @Get('placeholder-image')
   async getPlaceholderImage(
     @Query('websiteName') websiteName?: string,

@@ -9,7 +9,7 @@ This document describes how WebGenius generates website code (via the v0 API), e
 ```
 User submits prompt (Dashboard)
     → POST /website/generate (Backend)
-    → v0 API returns JSON (components + viteConfig or files)
+    → v0 Platform API returns chat + files (or JSON in message text)
     → Backend parses, sanitizes, normalizes, saves to DB + generated_sites/
     → Backend returns full website object to frontend
     → Frontend stores in state and passes to WebsitePreview + code tabs
@@ -30,11 +30,8 @@ User submits prompt (Dashboard)
 **File:** `backend/src/website/website.service.ts`
 
 - **Enhance prompt:** `enhanceUserPrompt(prompt)` adds design/functionality requirements (shop, calculator, todo, or generic).
-- **Call v0 API:** `openai.chat.completions.create()` with:
-  - `baseURL: 'https://api.v0.dev/v1'`
-  - System prompt: strict JSON shape with `components[]` and `viteConfig` (mainJsx, styleCss, indexHtml, etc.), React/Vite rules, no placeholders.
-  - User message: enhanced prompt.
-- Raw response: `completion.choices[0].message.content` (string, usually JSON).
+- **Call v0 Platform API:** `v0-sdk` `createClient` → `chats.create({ system, message, responseMode: 'sync' })`, poll `chats.getById` until files or completed; auth via `V0_API_KEY` / `OPENAI_API_KEY` (see `WebsiteService` constructor).
+- Raw result: chat with `latestVersion.files` (`name`, `content`) → normalized paths → `convertV0FilesToStructure`; else parse `text` / assistant message as JSON (legacy).
 
 ---
 

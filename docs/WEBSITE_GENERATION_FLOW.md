@@ -53,11 +53,8 @@ So when the code is great: **same data, same single HTML string, same single scr
 ### 2.1 Input and API
 
 - **Enhance prompt:** `enhanceUserPrompt(prompt)` — adds design/functionality (shop, calculator, todo, etc.).
-- **v0 API call:** `openai.chat.completions.create()` with:
-  - `baseURL: 'https://api.v0.dev/v1'`
-  - System prompt: JSON only, `components[]` + `viteConfig` (mainJsx, styleCss, …), React rules, no template literals in JSX attributes.
-  - User message: enhanced prompt.
-- **Response:** `completion.choices[0].message.content` (raw string, usually JSON).
+- **v0 Platform API call:** official [`v0-sdk`](https://v0.app/docs/api/platform/packages/v0-sdk) `createClient({ apiKey, baseUrl })` (same stack as `import { v0 } from 'v0-sdk'`, plus **`V0_API_URL`** and legacy key) → `chats.create({ system, message, responseMode: 'sync', modelConfiguration? })`, then `chats.getById` while the version is pending. **`OPENAI_API_KEY`** is copied to **`V0_API_KEY`** in `WebsiteService` when needed. Optional model: **`V0_PLATFORM_MODEL_ID`** only (`v0-max`, etc.).
+- **Response:** Chat JSON with **`latestVersion.files`** (`name` + `content`) → `normalizeV0SdkFiles` → `convertV0FilesToStructure`; fallback: parse `text` / last assistant `content` as JSON (legacy).
 
 ### 2.2 Parse response
 
