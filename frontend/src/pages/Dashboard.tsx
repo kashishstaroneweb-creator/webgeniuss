@@ -16,6 +16,24 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import JSZip from 'jszip';
 
+const STREAM_API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+
+function drainSseBlocks(buffer: string): { rest: string; events: { event?: string; data: string }[] } {
+  const events: { event?: string; data: string }[] = [];
+  const parts = buffer.split('\n\n');
+  const rest = parts.pop() ?? '';
+  for (const block of parts) {
+    let ev: string | undefined;
+    const dataLines: string[] = [];
+    for (const line of block.split('\n')) {
+      if (line.startsWith('event:')) ev = line.slice(6).trim();
+      else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
+    }
+    if (dataLines.length) events.push({ event: ev, data: dataLines.join('\n') });
+  }
+  return { rest, events };
+}
+
 interface Component {
   name: string;
   type: string;
@@ -43,6 +61,10 @@ interface GeneratedWebsite {
   jsCode?: string;
   components?: Component[];
   viteConfig?: ViteConfig;
+  /** v0 Platform chat id (same source as official v0-clone). */
+  v0ChatId?: string;
+  /** Hosted preview iframe URL from v0 (`demo` / `latestVersion.demoUrl`). */
+  v0DemoUrl?: string;
   createdAt: string;
 }
 
@@ -124,6 +146,8 @@ const Dashboard = () => {
           jsCode: data.jsCode,
           components: data.components,
           viteConfig: data.viteConfig,
+          v0ChatId: data.v0ChatId,
+          v0DemoUrl: data.v0DemoUrl,
           createdAt: data.createdAt,
         });
         setPrompt(data.prompt || '');
@@ -147,12 +171,13 @@ const Dashboard = () => {
     }
   }, [generatedWebsite?.id]);
 
-  // Fetch real-build preview URL when showing preview for a component-based website
+  // Fetch real-build preview URL when showing preview for a component-based website (skip if v0 hosts the demo — official v0-clone pattern)
   useEffect(() => {
     if (
       !generatedWebsite?.id ||
       !generatedWebsite?.components?.length ||
-      showCodeView
+      showCodeView ||
+      !!generatedWebsite?.v0DemoUrl
     ) {
       return;
     }
@@ -186,7 +211,13 @@ const Dashboard = () => {
     return () => {
       cancelled = true;
     };
-  }, [generatedWebsite?.id, generatedWebsite?.components?.length, generatedWebsite?.userId, showCodeView]);
+  }, [
+    generatedWebsite?.id,
+    generatedWebsite?.components?.length,
+    generatedWebsite?.userId,
+    generatedWebsite?.v0DemoUrl,
+    showCodeView,
+  ]);
 
   useEffect(() => {
     // Fetch stats
@@ -305,26 +336,88 @@ const Dashboard = () => {
       });
 
       const currentUserId = (user as any)?.id ?? (user as any)?._id;
-      const res = await api.post('/website/generate', {
-        prompt,
-        websiteName: websiteName || `Website ${Date.now()}`,
-        ...(currentUserId && { userId: currentUserId }),
+      const websiteNameFinal = websiteName || `Website ${Date.now()}`;
+
+      const streamRes = await fetch(`${STREAM_API_BASE}/website/generate-stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          prompt,
+          websiteName: websiteNameFinal,
+          ...(currentUserId && { userId: currentUserId }),
+        }),
       });
-      
-      console.log('Website generated successfully!', res.data);
-      console.log('Code lengths:', {
-        html: res.data.htmlCode?.length || 0,
-        css: res.data.cssCode?.length || 0,
-        js: res.data.jsCode?.length || 0
-      });
-      
-      // Check if we got actual code or just placeholders
-      if (res.data.htmlCode === '<div>Generated Website</div>' && 
-          res.data.cssCode === 'body { margin: 0; padding: 0; }') {
-        console.warn('WARNING: Received placeholder code. OpenAI may not have generated properly.');
+
+      if (!streamRes.ok) {
+        const errBody = await streamRes.json().catch(() => ({} as { message?: string }));
+        throw new Error(errBody.message || `Generation failed (${streamRes.status})`);
       }
-      
-      setGeneratedWebsite(res.data);
+
+      const reader = streamRes.body?.getReader();
+      if (!reader) {
+        throw new Error('No response body from generate-stream');
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let saved: GeneratedWebsite | null = null;
+      let streamError: string | null = null;
+      let finalizeHint: string | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (value) buffer += decoder.decode(value, { stream: true });
+        const { rest, events } = drainSseBlocks(buffer);
+        buffer = rest;
+        for (const e of events) {
+          if (e.event === 'website-saved') {
+            try {
+              saved = JSON.parse(e.data) as GeneratedWebsite;
+            } catch {
+              streamError = 'Invalid website-saved payload';
+            }
+          } else if (e.event === 'website-error') {
+            try {
+              const j = JSON.parse(e.data) as { message?: string };
+              streamError = j.message || 'website-error';
+            } catch {
+              streamError = 'website-error';
+            }
+          } else if (e.event === 'finalize-required') {
+            try {
+              const j = JSON.parse(e.data) as { message?: string };
+              finalizeHint = j.message || null;
+            } catch {
+              finalizeHint = 'finalize-required';
+            }
+          }
+        }
+        if (done) break;
+      }
+
+      if (streamError) {
+        throw new Error(streamError);
+      }
+      if (!saved) {
+        throw new Error(
+          finalizeHint ||
+            'Stream ended without a saved website. If the v0 UI showed a chat id, call POST /website/finalize-v0-chat with that id.',
+        );
+      }
+
+      console.log('Website generated successfully!', saved);
+      console.log('Code lengths:', {
+        html: saved.htmlCode?.length || 0,
+        css: saved.cssCode?.length || 0,
+        js: saved.jsCode?.length || 0,
+        viteMain: (saved.viteConfig?.mainJsx || saved.viteConfig?.mainJs)?.length || 0,
+        components: saved.components?.length ?? 0,
+      });
+
+      setGeneratedWebsite(saved);
       // Keep prompt and websiteName visible on the left for "generate again"
       // Automatically collapse sidebar when website is generated
       setCollapsed(true);
@@ -399,16 +492,36 @@ const Dashboard = () => {
     try {
       const zip = new JSZip();
       const folderName = generatedWebsite.websiteName.replace(/[^a-z0-9]/gi, '_').toLowerCase() || 'website';
-      
-      // Create folder structure
-      const htmlFolder = zip.folder('HTML');
-      const cssFolder = zip.folder('CSS');
-      const jsFolder = zip.folder('JavaScript');
+      const vc = generatedWebsite.viteConfig;
+      const mainEntry = vc?.mainJsx || vc?.mainJs || '';
+      const hasVitePayload =
+        !!mainEntry ||
+        !!(vc?.styleCss && vc.styleCss.trim()) ||
+        (generatedWebsite.components && generatedWebsite.components.length > 0);
 
-      // Add files to respective folders
-      htmlFolder?.file('index.html', generatedWebsite.htmlCode);
-      cssFolder?.file('styles.css', generatedWebsite.cssCode);
-      jsFolder?.file('script.js', generatedWebsite.jsCode);
+      if (hasVitePayload) {
+        const root = zip.folder(folderName) || zip;
+        const src = root.folder('src');
+        if (mainEntry) src?.file('main.jsx', mainEntry);
+        if (vc?.styleCss) src?.file('style.css', vc.styleCss);
+        if (vc?.indexHtml) root.file('index.html', vc.indexHtml);
+        if (vc?.viteConfig) root.file('vite.config.js', vc.viteConfig);
+        if (vc?.packageJson) root.file('package.json', vc.packageJson);
+        generatedWebsite.components?.forEach((c) => {
+          const rel = (c.path || `components/${c.name}.jsx`).replace(/^src\//, '');
+          const dir = rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '';
+          const base = rel.includes('/') ? rel.slice(rel.lastIndexOf('/') + 1) : rel;
+          const folder = dir ? src?.folder(dir) : src;
+          folder?.file(base, c.code || '');
+        });
+      } else {
+        const htmlFolder = zip.folder('HTML');
+        const cssFolder = zip.folder('CSS');
+        const jsFolder = zip.folder('JavaScript');
+        htmlFolder?.file('index.html', generatedWebsite.htmlCode || '');
+        cssFolder?.file('styles.css', generatedWebsite.cssCode || '');
+        jsFolder?.file('script.js', generatedWebsite.jsCode || '');
+      }
 
       // Generate zip file
       const blob = await zip.generateAsync({ type: 'blob' });
@@ -661,9 +774,17 @@ const Dashboard = () => {
                 </div>
                 <div className="flex items-center gap-2 text-sm">
                   {(() => {
-                    const needsBuild = generatedWebsite?.components && generatedWebsite.components.length > 0 && !showCodeView;
+                    const hostedV0 =
+                      !!(generatedWebsite?.v0DemoUrl && !showCodeView);
+                    const needsBuild =
+                      !!(
+                        generatedWebsite?.components &&
+                        generatedWebsite.components.length > 0 &&
+                        !showCodeView &&
+                        !hostedV0
+                      );
                     const buildingPreview = needsBuild && realPreviewLoading;
-                    const previewReady = generatedWebsite && !buildingPreview;
+                    const previewReady = !!generatedWebsite && (hostedV0 || !buildingPreview);
                     return (
                       <>
                         {previewReady ? (
@@ -674,7 +795,13 @@ const Dashboard = () => {
                           <span className="w-4 h-4 rounded-full border border-muted-foreground/40" />
                         )}
                         <span className={previewReady ? 'text-foreground font-medium' : 'text-muted-foreground'}>
-                          {previewReady ? 'Preview ready' : buildingPreview ? 'Building preview...' : 'Rendering preview...'}
+                          {previewReady
+                            ? hostedV0
+                              ? 'Preview ready (v0 hosted)'
+                              : 'Preview ready'
+                            : buildingPreview
+                              ? 'Building preview...'
+                              : 'Rendering preview...'}
                         </span>
                       </>
                     );
@@ -1154,14 +1281,65 @@ const Dashboard = () => {
                         )}
                       </div>
                     ) : (
-                      // Preview View: real-build iframe or legacy
+                      // Preview View: v0-hosted (official clone) → local Vite build → quick preview
                       <div className="flex-1 overflow-auto h-full flex flex-col min-h-[600px]">
-                        {realPreviewLoading && (
+                        {generatedWebsite?.v0DemoUrl && (
+                          <>
+                            {realPreviewFullscreen ? (
+                              <div className="fixed inset-0 z-50 bg-background flex flex-col">
+                                <div className="flex items-center justify-between p-4 border-b bg-card flex-shrink-0">
+                                  <h2 className="text-lg font-semibold">
+                                    {generatedWebsite.websiteName || 'Preview'} — v0 hosted
+                                  </h2>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => setRealPreviewFullscreen(false)}
+                                    className="gap-2"
+                                  >
+                                    <Minimize2 className="h-4 w-4" />
+                                    Exit Fullscreen
+                                  </Button>
+                                </div>
+                                <iframe
+                                  src={generatedWebsite.v0DemoUrl}
+                                  title="v0 hosted preview"
+                                  className="flex-1 w-full border-0 min-h-0"
+                                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
+                                />
+                              </div>
+                            ) : (
+                              <div className="border rounded-lg overflow-hidden bg-card flex flex-col flex-1 min-h-[600px]">
+                                <div className="flex items-center justify-between p-3 border-b bg-muted/50 flex-shrink-0">
+                                  <div>
+                                    <h3 className="text-sm font-medium">{generatedWebsite.websiteName || 'Preview'}</h3>
+                                    <p className="text-xs text-muted-foreground">Hosted preview (v0 Platform)</p>
+                                  </div>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => setRealPreviewFullscreen(true)}
+                                    className="h-7 px-2"
+                                  >
+                                    <Maximize2 className="h-3 w-3" />
+                                  </Button>
+                                </div>
+                                <iframe
+                                  src={generatedWebsite.v0DemoUrl}
+                                  title="v0 hosted preview"
+                                  className="w-full flex-1 min-h-[500px] border-0"
+                                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
+                                />
+                              </div>
+                            )}
+                          </>
+                        )}
+                        {!generatedWebsite?.v0DemoUrl && realPreviewLoading && (
                           <div className="flex-1 flex items-center justify-center min-h-[600px]">
                             <GeneratingLoader variant="building" />
                           </div>
                         )}
-                        {!realPreviewLoading && realPreviewUrl && (
+                        {!generatedWebsite?.v0DemoUrl && !realPreviewLoading && realPreviewUrl && (
                           <>
                             {realPreviewFullscreen ? (
                               <div className="fixed inset-0 z-50 bg-background flex flex-col">
@@ -1207,7 +1385,7 @@ const Dashboard = () => {
                             )}
                           </>
                         )}
-                        {!realPreviewLoading && realPreviewError && (
+                        {!generatedWebsite?.v0DemoUrl && !realPreviewLoading && realPreviewError && (
                           <div className="p-4 space-y-2">
                             <p className="text-sm text-destructive">{realPreviewError}</p>
                             <p className="text-xs text-muted-foreground">Showing quick preview instead.</p>
@@ -1223,7 +1401,10 @@ const Dashboard = () => {
                             />
                           </div>
                         )}
-                        {!realPreviewLoading && !realPreviewUrl && !realPreviewError && (
+                        {!generatedWebsite?.v0DemoUrl &&
+                          !realPreviewLoading &&
+                          !realPreviewUrl &&
+                          !realPreviewError && (
                           <WebsitePreview
                             html={generatedWebsite.htmlCode}
                             css={generatedWebsite.cssCode}

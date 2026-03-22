@@ -4,6 +4,7 @@ import { WebsiteService } from './website.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { GenerateWebsiteDto } from './dto/generate-website.dto';
+import { FinalizeV0ChatDto } from './dto/finalize-v0-chat.dto';
 import { EditWebsiteDto } from './dto/edit-website.dto';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -41,6 +42,55 @@ export class WebsiteController {
       console.error('WebsiteController.generate - Error:', message, error?.stack);
       throw new HttpException(
         { message, statusCode: status, error: 'Website generation failed' },
+        status,
+        { cause: error },
+      );
+    }
+  }
+
+  /**
+   * v0 experimental_stream: streams raw v0 SSE through, then runs GET /chats/:id + same persist path as POST /website/generate.
+   * Terminal SSE: `website-saved` (JSON body), `finalize-required`, or `website-error`.
+   */
+  @Post('generate-stream')
+  async generateStream(
+    @Body() generateDto: GenerateWebsiteDto,
+    @Res({ passthrough: false }) res: Response,
+  ) {
+    const userId = generateDto.userId || '691df5ddac69fc46beca44b3';
+    const websiteName = generateDto.websiteName || `Website ${Date.now()}`;
+    try {
+      await this.websiteService.pipeV0GenerationStream(res, userId, generateDto.prompt, websiteName);
+    } catch (error: any) {
+      if (!res.headersSent) {
+        const message = error?.message || 'Unknown error during streaming generation';
+        const status = error?.status || HttpStatus.INTERNAL_SERVER_ERROR;
+        throw new HttpException(
+          { message, statusCode: status, error: 'Website stream failed' },
+          status,
+          { cause: error },
+        );
+      }
+    }
+  }
+
+  /** When stream did not yield a chat id, or for clients that only parse id locally. */
+  @Post('finalize-v0-chat')
+  async finalizeV0Chat(@Body() dto: FinalizeV0ChatDto) {
+    const userId = dto.userId || '691df5ddac69fc46beca44b3';
+    const websiteName = dto.websiteName || `Website ${Date.now()}`;
+    try {
+      return await this.websiteService.finalizeWebsiteFromV0Chat(
+        userId,
+        dto.chatId,
+        websiteName,
+        dto.prompt ?? '',
+      );
+    } catch (error: any) {
+      const message = error?.message || 'Unknown error during finalize';
+      const status = error?.status || HttpStatus.INTERNAL_SERVER_ERROR;
+      throw new HttpException(
+        { message, statusCode: status, error: 'Finalize v0 chat failed' },
         status,
         { cause: error },
       );

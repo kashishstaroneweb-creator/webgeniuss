@@ -51,6 +51,14 @@ export class Website {
   @Column({ nullable: true })
   generatedPath?: string;
 
+  /** v0 Platform API chat id (source of truth for hosted demo). */
+  @Column({ nullable: true })
+  v0ChatId?: string;
+
+  /** Hosted preview URL from v0 (`demo` / `latestVersion.demoUrl`), same pattern as v0-clone. */
+  @Column({ nullable: true })
+  v0DemoUrl?: string;
+
   @CreateDateColumn()
   createdAt: Date;
 }

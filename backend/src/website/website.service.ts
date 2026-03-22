@@ -9,7 +9,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import axios from 'axios';
+import { Transform } from 'stream';
+import type { Response } from 'express';
+import axios, { type AxiosResponse } from 'axios';
 
 const execAsync = promisify(exec);
 
@@ -95,22 +97,9 @@ export class WebsiteService {
     }
   }
 
-  async generateWebsite(userId: string, prompt: string, websiteName: string) {
-    console.log('WebsiteService.generateWebsite - Starting:', { userId, websiteName, promptLength: prompt.length });
-    try {
-      console.log('WebsiteService.generateWebsite - Calling v0 Platform API...');
-      console.log(
-        'WebsiteService.generateWebsite - v0 API Key:',
-        WebsiteService.normalizeV0ApiKey(process.env.V0_API_KEY) ? 'SET' : 'NOT SET',
-      );
-      console.log(
-        'WebsiteService.generateWebsite - v0 model config:',
-        JSON.stringify(this.getV0ModelConfiguration() ?? '(platform default)'),
-      );
-      console.log('WebsiteService.generateWebsite - v0 response mode:', this.getV0ResponseMode());
-
-      // Enhanced system prompt optimized for v0 API - v0 specializes in production-ready React components
-      const systemPrompt = `You are v0, an expert AI specialized in generating PRODUCTION-READY, enterprise-grade React components and websites. Your expertise is in creating stunning, modern web applications with Vite + React that look like they were built by top-tier agencies. Generate a component-based architecture following React and Vite best practices.
+  /** Shared v0 system instruction for JSON-shaped React/Vite website output (used by async generate and experimental_stream). */
+  private getV0WebsiteSystemPrompt(): string {
+    return `You are v0, an expert AI specialized in generating PRODUCTION-READY, enterprise-grade React components and websites. Your expertise is in creating stunning, modern web applications with Vite + React that look like they were built by top-tier agencies. Generate a component-based architecture following React and Vite best practices.
 
 CRITICAL: You MUST return ONLY a valid JSON object. No explanations, no markdown, no code blocks, just pure JSON starting with { and ending with }.
 
@@ -317,6 +306,175 @@ export default function Header() {
 DO NOT use document.createElement, innerHTML, or jsx() helper. ONLY use React JSX syntax.
 
 For dynamic class names use: className={'base-class ' + (condition ? 'active' : '')} never className={\`base-class \${expr}\`}.`;
+  }
+
+  /** Sanitize, persist DB + disk — same path as POST /website/generate after v0 content is known. */
+  private async persistWebsiteAfterV0Generation(args: {
+    userId: string;
+    websiteName: string;
+    prompt: string;
+    responseContent: string;
+    websiteCode: any;
+    v0ChatId?: string;
+    v0DemoUrl?: string;
+  }) {
+    const { userId, websiteName, prompt, responseContent, websiteCode, v0ChatId, v0DemoUrl } = args;
+
+    // Sanitize JSX and fix images: validate image URLs (HEAD), replace 404s with a relevant image (Unsplash by site theme, else Picsum), then replace imgur
+    const getPlaceholderUrl = await this.buildPlaceholderUrlGetter(websiteName || '', prompt);
+    const sanitizeCode = (raw: string) =>
+      this.sanitizeInvalidConditionAssignment(
+        this.sanitizeJsxDollarInterpolation(this.transformJsxAttributeTemplateLiterals(raw)),
+      );
+    if (websiteCode?.components?.length) {
+      for (let i = 0; i < websiteCode.components.length; i++) {
+        let code = sanitizeCode(websiteCode.components[i].code || '');
+        code = await this.validateAndReplaceBrokenImageUrls(code, getPlaceholderUrl);
+        code = this.replaceBrokenImageUrls(code);
+        websiteCode.components[i].code = this.wrapAdjacentJsxInFragment(code);
+      }
+    }
+    if (websiteCode?.viteConfig?.mainJsx) {
+      let main = sanitizeCode(websiteCode.viteConfig.mainJsx);
+      main = await this.validateAndReplaceBrokenImageUrls(main, getPlaceholderUrl);
+      main = this.replaceBrokenImageUrls(main);
+      websiteCode.viteConfig.mainJsx = this.wrapAdjacentJsxInFragment(main);
+    }
+    if (websiteCode?.viteConfig?.mainJs) {
+      let main = sanitizeCode(websiteCode.viteConfig.mainJs);
+      main = await this.validateAndReplaceBrokenImageUrls(main, getPlaceholderUrl);
+      main = this.replaceBrokenImageUrls(main);
+      websiteCode.viteConfig.mainJs = this.wrapAdjacentJsxInFragment(main);
+    }
+    if (websiteCode?.html) {
+      let html = await this.validateAndReplaceBrokenImageUrls(websiteCode.html, getPlaceholderUrl);
+      websiteCode.html = this.replaceBrokenImageUrls(html);
+    }
+    if (websiteCode?.css) websiteCode.css = this.replaceBrokenImageUrls(websiteCode.css);
+    if (websiteCode?.js) {
+      let js = await this.validateAndReplaceBrokenImageUrls(websiteCode.js, getPlaceholderUrl);
+      websiteCode.js = this.replaceBrokenImageUrls(js);
+    }
+
+    // Strip any placeholder "const ComponentName = [];" from mainJsx/mainJs so preview never sees duplicate declarations
+    const componentNamesForStrip = (websiteCode?.components || []).map((c: any) => (c.name || '').replace(/\s+/g, ''));
+    if (componentNamesForStrip.length > 0 && websiteCode?.viteConfig) {
+      const stripPlaceholders = (code: string) => {
+        let out = code;
+        componentNamesForStrip.forEach((name: string) => {
+          if (!name) return;
+          out = out.replace(new RegExp(`const\\s+${name}\\s*=\\s*\\[\\]\\s*;?\\s*`, 'g'), '');
+        });
+        return out;
+      };
+      if (websiteCode.viteConfig.mainJsx) websiteCode.viteConfig.mainJsx = stripPlaceholders(websiteCode.viteConfig.mainJsx);
+      if (websiteCode.viteConfig.mainJs) websiteCode.viteConfig.mainJs = stripPlaceholders(websiteCode.viteConfig.mainJs);
+    }
+
+    // Extract component-based structure; legacy html/css/js only when the model returns them (no placeholder masking)
+    const components = websiteCode.components || [];
+    const viteConfig = websiteCode.viteConfig || null;
+    const hasViteAppCode = !!(viteConfig?.mainJsx || viteConfig?.mainJs);
+
+    const htmlCode = websiteCode.html || websiteCode.HTML || '';
+    const cssCode = websiteCode.css || websiteCode.CSS || '';
+    const jsCode = websiteCode.js || websiteCode.JS || websiteCode.javascript || '';
+
+    // Debug: log after normalization to spot placeholder declarations
+    const componentNames = components.map((c: any) => (c.name || '').replace(/\s+/g, ''));
+    const mainJsxPreview = viteConfig?.mainJsx?.substring(0, 500) || viteConfig?.mainJs?.substring(0, 500) || '';
+    console.log('WebsiteService.persistWebsiteAfterV0Generation - After normalization:', {
+      componentNames,
+      mainJsxPreview: mainJsxPreview || '(none)',
+    });
+    const badPlaceholder = componentNames.find((name: string) => name && mainJsxPreview.includes(`const ${name} = []`));
+    if (badPlaceholder) {
+      console.warn(
+        'WebsiteService.persistWebsiteAfterV0Generation - mainJsx still contains placeholder for component:',
+        badPlaceholder,
+      );
+    }
+
+    console.log('WebsiteService.persistWebsiteAfterV0Generation - Extracted structure:', {
+      hasComponents: components.length > 0,
+      componentCount: components.length,
+      hasViteConfig: !!viteConfig,
+      legacyMode: components.length === 0,
+    });
+
+    const hasLegacySnippet =
+      (typeof htmlCode === 'string' && htmlCode.trim().length > 0) ||
+      (typeof jsCode === 'string' && jsCode.trim().length > 0) ||
+      (typeof cssCode === 'string' && cssCode.trim().length > 0);
+    if (components.length === 0 && !hasViteAppCode && !hasLegacySnippet) {
+      console.error(
+        'WebsiteService.persistWebsiteAfterV0Generation - No valid code from v0 API (no components, vite entry, or legacy html/css/js).',
+      );
+      const err = new Error(
+        'The AI did not return valid website code. You may have hit a content limit or the request may have been refused. Try rephrasing your prompt or simplifying the request.',
+      ) as Error & { status?: number };
+      err.status = 422;
+      throw err;
+    }
+
+    const storeAsVite = components.length > 0 || hasViteAppCode;
+    const website = this.websiteRepository.create({
+      userId,
+      websiteName,
+      prompt,
+      htmlCode: storeAsVite ? '' : htmlCode,
+      cssCode: storeAsVite ? '' : cssCode,
+      jsCode: storeAsVite ? '' : jsCode,
+      components: components.length > 0 ? components : undefined,
+      viteConfig: viteConfig || undefined,
+      v0ChatId,
+      v0DemoUrl: v0DemoUrl || undefined,
+    });
+
+    const savedWebsite = await this.websiteRepository.save(website);
+
+    await this.promptRepository.save(
+      this.promptRepository.create({
+        userId,
+        prompt,
+        aiResponse: responseContent,
+      }),
+    );
+
+    const generatedPath = storeAsVite
+      ? await this.saveViteProject(userId, savedWebsite.id.toString(), components, viteConfig, websiteName)
+      : await this.saveWebsiteFiles(userId, savedWebsite.id.toString(), htmlCode, cssCode, jsCode);
+
+    savedWebsite.generatedPath = generatedPath;
+    await this.websiteRepository.save(savedWebsite);
+
+    console.log('WebsiteService.persistWebsiteAfterV0Generation - Success, saved website ID:', savedWebsite.id);
+    return {
+      ...savedWebsite,
+      id: savedWebsite.id.toString(),
+      components: components.length > 0 ? components : undefined,
+      viteConfig: viteConfig || undefined,
+      message: 'Website generated successfully',
+    };
+  }
+
+  async generateWebsite(userId: string, prompt: string, websiteName: string) {
+    console.log('WebsiteService.generateWebsite - Starting:', { userId, websiteName, promptLength: prompt.length });
+    try {
+      console.log('WebsiteService.generateWebsite - Calling v0 Platform API...');
+      console.log(
+        'WebsiteService.generateWebsite - v0 API Key:',
+        WebsiteService.normalizeV0ApiKey(process.env.V0_API_KEY) ? 'SET' : 'NOT SET',
+      );
+      console.log(
+        'WebsiteService.generateWebsite - v0 model config:',
+        JSON.stringify(this.getV0ModelConfiguration() ?? '(platform default)'),
+      );
+      console.log(
+        'WebsiteService.generateWebsite - v0 chats.create: async+poll (or sync on retry). Use POST /website/generate-stream for experimental_stream + SSE.',
+      );
+
+      const systemPrompt = this.getV0WebsiteSystemPrompt();
 
       // Use raw prompt as requested (no automatic prompt enhancement).
       const userPrompt = (prompt || '').trim();
@@ -324,153 +482,23 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       console.log('WebsiteService.generateWebsite - Original prompt length:', prompt.length);
       console.log('WebsiteService.generateWebsite - Final prompt length:', userPrompt.length);
 
-      const { responseContent, websiteCode } = await this.fetchWebsiteCodeFromV0(systemPrompt, userPrompt);
-
-      // Sanitize JSX and fix images: validate image URLs (HEAD), replace 404s with a relevant image (Unsplash by site theme, else Picsum), then replace imgur
-      const getPlaceholderUrl = await this.buildPlaceholderUrlGetter(websiteName || '', prompt);
-      const sanitizeCode = (raw: string) =>
-        this.sanitizeInvalidConditionAssignment(
-          this.sanitizeJsxDollarInterpolation(this.transformJsxAttributeTemplateLiterals(raw)),
-        );
-      if (websiteCode?.components?.length) {
-        for (let i = 0; i < websiteCode.components.length; i++) {
-          let code = sanitizeCode(websiteCode.components[i].code || '');
-          code = await this.validateAndReplaceBrokenImageUrls(code, getPlaceholderUrl);
-          code = this.replaceBrokenImageUrls(code);
-          websiteCode.components[i].code = this.wrapAdjacentJsxInFragment(code);
-        }
-      }
-      if (websiteCode?.viteConfig?.mainJsx) {
-        let main = sanitizeCode(websiteCode.viteConfig.mainJsx);
-        main = await this.validateAndReplaceBrokenImageUrls(main, getPlaceholderUrl);
-        main = this.replaceBrokenImageUrls(main);
-        websiteCode.viteConfig.mainJsx = this.wrapAdjacentJsxInFragment(main);
-      }
-      if (websiteCode?.viteConfig?.mainJs) {
-        let main = sanitizeCode(websiteCode.viteConfig.mainJs);
-        main = await this.validateAndReplaceBrokenImageUrls(main, getPlaceholderUrl);
-        main = this.replaceBrokenImageUrls(main);
-        websiteCode.viteConfig.mainJs = this.wrapAdjacentJsxInFragment(main);
-      }
-      if (websiteCode?.html) {
-        let html = await this.validateAndReplaceBrokenImageUrls(websiteCode.html, getPlaceholderUrl);
-        websiteCode.html = this.replaceBrokenImageUrls(html);
-      }
-      if (websiteCode?.css) websiteCode.css = this.replaceBrokenImageUrls(websiteCode.css);
-      if (websiteCode?.js) {
-        let js = await this.validateAndReplaceBrokenImageUrls(websiteCode.js, getPlaceholderUrl);
-        websiteCode.js = this.replaceBrokenImageUrls(js);
+      let { responseContent, websiteCode, v0ChatId, v0DemoUrl } = await this.fetchWebsiteCodeFromV0(
+        systemPrompt,
+        userPrompt,
+      );
+      if (v0ChatId && !v0DemoUrl) {
+        v0DemoUrl = await this.fetchV0DemoUrlByChatId(v0ChatId);
       }
 
-      // Strip any placeholder "const ComponentName = [];" from mainJsx/mainJs so preview never sees duplicate declarations
-      const componentNamesForStrip = (websiteCode?.components || []).map((c: any) => (c.name || '').replace(/\s+/g, ''));
-      if (componentNamesForStrip.length > 0 && websiteCode?.viteConfig) {
-        const stripPlaceholders = (code: string) => {
-          let out = code;
-          componentNamesForStrip.forEach((name: string) => {
-            if (!name) return;
-            out = out.replace(new RegExp(`const\\s+${name}\\s*=\\s*\\[\\]\\s*;?\\s*`, 'g'), '');
-          });
-          return out;
-        };
-        if (websiteCode.viteConfig.mainJsx) websiteCode.viteConfig.mainJsx = stripPlaceholders(websiteCode.viteConfig.mainJsx);
-        if (websiteCode.viteConfig.mainJs) websiteCode.viteConfig.mainJs = stripPlaceholders(websiteCode.viteConfig.mainJs);
-      }
-
-      // Extract component-based structure or fallback to legacy format
-      const components = websiteCode.components || [];
-      const viteConfig = websiteCode.viteConfig || null;
-      
-      // Legacy fallback for backward compatibility
-      const htmlCode = websiteCode.html || websiteCode.HTML || '<div>Generated Website</div>';
-      const cssCode = websiteCode.css || websiteCode.CSS || 'body { margin: 0; padding: 0; }';
-      const jsCode = websiteCode.js || websiteCode.JS || websiteCode.javascript || '// JavaScript code';
-
-      // Debug: log after normalization to spot placeholder declarations
-      const componentNames = components.map((c: any) => (c.name || '').replace(/\s+/g, ''));
-      const mainJsxPreview = viteConfig?.mainJsx?.substring(0, 500) || viteConfig?.mainJs?.substring(0, 500) || '';
-      console.log('WebsiteService.generateWebsite - After normalization:', {
-        componentNames,
-        mainJsxPreview: mainJsxPreview || '(none)',
-      });
-      const badPlaceholder = componentNames.find((name: string) => name && mainJsxPreview.includes(`const ${name} = []`));
-      if (badPlaceholder) {
-        console.warn('WebsiteService.generateWebsite - mainJsx still contains placeholder for component:', badPlaceholder);
-      }
-      
-      console.log('WebsiteService.generateWebsite - Extracted structure:', {
-        hasComponents: components.length > 0,
-        componentCount: components.length,
-        hasViteConfig: !!viteConfig,
-        legacyMode: components.length === 0
-      });
-      
-      const hasViteAppCode = !!(viteConfig?.mainJsx || viteConfig?.mainJs);
-      if (
-        components.length === 0 &&
-        !hasViteAppCode &&
-        htmlCode === '<div>Generated Website</div>' &&
-        cssCode === 'body { margin: 0; padding: 0; }'
-      ) {
-        console.error('WebsiteService.generateWebsite - No valid code from v0 API; refusing to save placeholder.');
-        const err = new Error(
-          'The AI did not return valid website code. You may have hit a content limit or the request may have been refused. Try rephrasing your prompt or simplifying the request.',
-        ) as Error & { status?: number };
-        err.status = 422;
-        throw err;
-      }
-
-      // Save website to database
-      const website = this.websiteRepository.create({
+      return this.persistWebsiteAfterV0Generation({
         userId,
         websiteName,
         prompt,
-        htmlCode: components.length > 0 ? '' : htmlCode, // Keep legacy for backward compat
-        cssCode: components.length > 0 ? '' : cssCode,
-        jsCode: components.length > 0 ? '' : jsCode,
-        components: components.length > 0 ? components : undefined,
-        viteConfig: viteConfig || undefined,
+        responseContent,
+        websiteCode,
+        v0ChatId,
+        v0DemoUrl,
       });
-
-      const savedWebsite = await this.websiteRepository.save(website);
-
-      // Save prompt history
-      await this.promptRepository.save(
-        this.promptRepository.create({
-          userId,
-          prompt,
-          aiResponse: responseContent,
-        }),
-      );
-
-      // Generate files in generated_sites folder
-      const generatedPath = components.length > 0
-        ? await this.saveViteProject(
-            userId,
-            savedWebsite.id.toString(),
-            components,
-            viteConfig,
-            websiteName,
-          )
-        : await this.saveWebsiteFiles(
-            userId,
-            savedWebsite.id.toString(),
-            htmlCode,
-            cssCode,
-            jsCode,
-          );
-
-      savedWebsite.generatedPath = generatedPath;
-      await this.websiteRepository.save(savedWebsite);
-
-      console.log('WebsiteService.generateWebsite - Success, saved website ID:', savedWebsite.id);
-      return {
-        ...savedWebsite,
-        id: savedWebsite.id.toString(),
-        components: components.length > 0 ? components : undefined,
-        viteConfig: viteConfig || undefined,
-        message: 'Website generated successfully',
-      };
     } catch (error) {
       console.error('WebsiteService.generateWebsite - Error:', {
         message: error.message,
@@ -508,7 +536,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       }
       if (error.message.includes('UND_ERR_HEADERS_TIMEOUT') || error.message.includes('Headers Timeout Error')) {
         const err = new Error(
-          `Failed to generate website: v0 timed out while starting generation. Try again, simplify the prompt, or use V0_RESPONSE_MODE=async (recommended).`,
+          `Failed to generate website: v0 HTTP client timed out waiting for response headers. Default is now V0_RESPONSE_MODE=async with polling; if you set V0_RESPONSE_MODE=sync, increase V0_CREATE_TIMEOUT_MS or set V0_CREATE_USE_AXIOS_FIRST=1.`,
         ) as Error & { status?: number };
         err.status = 504;
         throw err;
@@ -527,6 +555,252 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       
       throw new Error(`Failed to generate website: ${error.message}`);
     }
+  }
+
+  /**
+   * v0 experimental_stream uses SSE `data: <json>` lines (see v0-sdk `parseStreamingResponse`).
+   * Chat id appears inside JSON objects with `object: "chat"` (not necessarily at a fixed path).
+   */
+  private findChatIdInV0StreamJson(val: unknown, depth = 0): string | null {
+    if (depth > 12 || val == null) return null;
+    if (typeof val === 'object' && !Array.isArray(val)) {
+      const o = val as Record<string, unknown>;
+      const idStr = typeof o.id === 'string' ? o.id : null;
+      if (idStr && (o.object === 'chat' || o.type === 'chat')) {
+        return idStr;
+      }
+      for (const k of Object.keys(o)) {
+        const found = this.findChatIdInV0StreamJson(o[k], depth + 1);
+        if (found) return found;
+      }
+    }
+    if (Array.isArray(val)) {
+      for (const item of val) {
+        const found = this.findChatIdInV0StreamJson(item, depth + 1);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
+  /** Parse one SSE `data:` payload (or raw JSON line) and return chat id if present. */
+  private tryChatIdFromV0StreamDataPayload(raw: string): string | null {
+    const s = raw.trim();
+    if (!s || s === '[DONE]') return null;
+    try {
+      return this.findChatIdInV0StreamJson(JSON.parse(s));
+    } catch {
+      return null;
+    }
+  }
+
+  /** Regex fallback when JSON is truncated or shape differs (bounded scan). */
+  private tryExtractV0ChatIdFromStreamBuffer(buffer: string): string | null {
+    const patterns: RegExp[] = [
+      /"object"\s*:\s*"chat"[\s\S]{0,400}?"id"\s*:\s*"([^"]+)"/,
+      /"id"\s*:\s*"([^"]+)"[\s\S]{0,200}?"object"\s*:\s*"chat"/,
+      /"chat"\s*:\s*\{\s*"id"\s*:\s*"([^"]+)"/,
+      /"chatId"\s*:\s*"([^"]+)"/,
+      /\bid"\s*:\s*"(chat_[a-zA-Z0-9_-]+)"/,
+      /\bid"\s*:\s*"(cm[a-zA-Z0-9_-]{10,})"/,
+    ];
+    for (const re of patterns) {
+      const m = buffer.match(re);
+      if (m?.[1]) return m[1];
+    }
+    return null;
+  }
+
+  /**
+   * Load finalized v0 chat by id, then run the same sanitize → persist path as POST /website/generate.
+   */
+  async finalizeWebsiteFromV0Chat(userId: string, chatId: string, websiteName: string, prompt: string) {
+    let chat = await this.getV0ChatByIdRest(chatId);
+    const r = chat as ChatDetail & { chat?: { id?: string } };
+    if (!chat.id && r.chat?.id) {
+      chat = { ...chat, id: r.chat.id } as ChatDetail;
+    }
+    chat = await this.waitForV0ChatReady(chat, true);
+    const refusalText = (chat.text || this.getLastAssistantContent(chat) || '').trim();
+    if (this.isRefusalResponse(refusalText)) {
+      const err = new Error(
+        'The AI declined to generate this website. Try rephrasing your prompt.',
+      ) as Error & { status?: number };
+      err.status = 422;
+      throw err;
+    }
+    let websiteCode = this.websiteCodeFromChatDetail(chat);
+    if (websiteCode?.files && Array.isArray(websiteCode.files)) {
+      websiteCode = this.convertV0FilesToStructure(websiteCode);
+    }
+    const responseContent = this.serializeChatForHistory(chat);
+    let v0DemoUrl = this.extractV0DemoFromChatDetail(chat);
+    if (chat.id && !v0DemoUrl) {
+      v0DemoUrl = await this.fetchV0DemoUrlByChatId(chat.id);
+    }
+    return this.persistWebsiteAfterV0Generation({
+      userId,
+      websiteName,
+      prompt,
+      responseContent,
+      websiteCode,
+      v0ChatId: chat.id,
+      v0DemoUrl,
+    });
+  }
+
+  /**
+   * v0 `experimental_stream`: proxy raw stream to the client, then GET /chats/:id and persist (same pipeline as generate).
+   */
+  async pipeV0GenerationStream(res: Response, userId: string, prompt: string, websiteName: string): Promise<void> {
+    const systemPrompt = this.getV0WebsiteSystemPrompt();
+    const userMessage = (prompt || '').trim();
+    const modelConfiguration = this.getV0ModelConfiguration();
+    const body: Record<string, unknown> = {
+      message: userMessage,
+      system: systemPrompt,
+      responseMode: 'experimental_stream',
+    };
+    if (modelConfiguration) body.modelConfiguration = modelConfiguration;
+
+    const timeout = Number(process.env.V0_STREAM_TIMEOUT_MS) || 600_000;
+    let axiosRes: AxiosResponse<NodeJS.ReadableStream>;
+    try {
+      axiosRes = await axios.post<NodeJS.ReadableStream>(`${this.getV0BaseUrl()}/chats`, body, {
+        responseType: 'stream',
+        timeout,
+        headers: {
+          Authorization: `Bearer ${this.getV0ApiKeyOrThrow()}`,
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+          'Cache-Control': 'no-cache',
+        },
+        validateStatus: () => true,
+      });
+    } catch (e: unknown) {
+      if (!res.headersSent) {
+        res.status(502).json({ message: this.formatV0NetworkError(e) });
+      }
+      return;
+    }
+
+    if (axiosRes.status >= 400) {
+      const chunks: Buffer[] = [];
+      await new Promise<void>((resolve, reject) => {
+        const s = axiosRes.data as NodeJS.ReadableStream;
+        s.on('data', (c: Buffer) => chunks.push(c));
+        s.on('end', () => resolve());
+        s.on('error', reject);
+      });
+      const text = Buffer.concat(chunks).toString('utf8').slice(0, 8000);
+      if (!res.headersSent) {
+        res.status(axiosRes.status).json({ message: text || `v0 returned HTTP ${axiosRes.status}` });
+      }
+      return;
+    }
+
+    res.status(200);
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    (res as Response & { flushHeaders?: () => void }).flushHeaders?.();
+
+    let sniffBuffer = '';
+    const maxSniffFallback = 2_097_152;
+    let sseLineCarry = '';
+    const h = axiosRes.headers;
+    const chatIdFromHeader = (h['x-chat-id'] || h['x-v0-chat-id']) as string | undefined;
+    let chatIdCaptured = (chatIdFromHeader && String(chatIdFromHeader).trim()) || null;
+
+    const forward = new Transform({
+      transform: (chunk: Buffer, _enc, cb) => {
+        const text = chunk.toString('utf8');
+        if (!chatIdCaptured && sniffBuffer.length < maxSniffFallback) {
+          const take = maxSniffFallback - sniffBuffer.length;
+          sniffBuffer += take >= text.length ? text : text.slice(0, take);
+        }
+
+        if (!chatIdCaptured) {
+          sseLineCarry += text;
+          const lines = sseLineCarry.split('\n');
+          sseLineCarry = lines.pop() ?? '';
+          for (const line of lines) {
+            if (line.startsWith('data:')) {
+              const raw = line.startsWith('data: ') ? line.slice(6) : line.slice(5);
+              chatIdCaptured = this.tryChatIdFromV0StreamDataPayload(raw);
+              if (chatIdCaptured) break;
+            } else {
+              const t = line.trim();
+              if (t.startsWith('{')) {
+                chatIdCaptured = this.tryChatIdFromV0StreamDataPayload(t);
+                if (chatIdCaptured) break;
+              }
+            }
+          }
+        }
+        cb(null, chunk);
+      },
+    });
+
+    const upstream = axiosRes.data as NodeJS.ReadableStream;
+    upstream.pipe(forward);
+    forward.pipe(res, { end: false });
+
+    const writeSseAndEnd = (event: string, payload: unknown) => {
+      if (res.writableEnded) return;
+      try {
+        res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+      } catch {
+        /* ignore */
+      }
+    };
+
+    const finishWithSse = async () => {
+      if (res.writableEnded) return;
+      try {
+        if (!chatIdCaptured && sseLineCarry.trim()) {
+          for (const line of sseLineCarry.split('\n')) {
+            if (line.startsWith('data:')) {
+              const raw = line.startsWith('data: ') ? line.slice(6) : line.slice(5);
+              chatIdCaptured = this.tryChatIdFromV0StreamDataPayload(raw);
+              if (chatIdCaptured) break;
+            }
+          }
+        }
+        if (!chatIdCaptured && sniffBuffer.length > 0) {
+          chatIdCaptured = this.tryExtractV0ChatIdFromStreamBuffer(sniffBuffer);
+        }
+        if (!chatIdCaptured) {
+          writeSseAndEnd('finalize-required', {
+            message:
+              'Could not detect v0 chat id from stream; call POST /website/finalize-v0-chat with chatId once generation completes.',
+          });
+          res.end();
+          return;
+        }
+        const saved = await this.finalizeWebsiteFromV0Chat(userId, chatIdCaptured, websiteName, prompt);
+        writeSseAndEnd('website-saved', saved);
+        res.end();
+      } catch (e: unknown) {
+        const msg = (e as Error)?.message || String(e);
+        writeSseAndEnd('website-error', { message: msg });
+        res.end();
+      }
+    };
+
+    forward.on('end', () => {
+      void finishWithSse();
+    });
+    forward.on('error', (err: Error) => {
+      console.error('WebsiteService.pipeV0GenerationStream - forward error:', err);
+      writeSseAndEnd('website-error', { message: err.message });
+      if (!res.writableEnded) res.end();
+    });
+    upstream.on('error', (err: Error) => {
+      console.error('WebsiteService.pipeV0GenerationStream - upstream error:', err);
+      forward.destroy(err);
+    });
   }
 
   /**
@@ -557,7 +831,9 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       await this.websiteRepository.save(website);
     }
 
-    const isComponentBased = (website.components?.length ?? 0) > 0;
+    const isComponentBased =
+      (website.components?.length ?? 0) > 0 ||
+      !!(website.viteConfig?.mainJsx || website.viteConfig?.mainJs);
 
     const editSystemPrompt = isComponentBased
       ? `You are an expert editor for React/Vite websites. You will receive the CURRENT website as a JSON object with "components" (array of { name, type, path, code, language }) and "viteConfig" (object with packageJson, viteConfig, indexHtml, mainJsx, styleCss). The user will give you ONE edit instruction. Your job is to return the COMPLETE updated website in the EXACT SAME JSON structure. Rules:
@@ -576,7 +852,11 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       ? `Current website (JSON):\n${JSON.stringify({ components: website.components || [], viteConfig: website.viteConfig || {} })}\n\nUser edit request: ${editPrompt}`
       : `Current HTML:\n${website.htmlCode || ''}\n\nCurrent CSS:\n${website.cssCode || ''}\n\nCurrent JS:\n${website.jsCode || ''}\n\nUser edit request: ${editPrompt}`;
 
-    const { websiteCode: websiteCodeRaw } = await this.fetchWebsiteCodeFromV0(editSystemPrompt, userMessage);
+    let { websiteCode: websiteCodeRaw, v0ChatId: newV0ChatId, v0DemoUrl: newV0DemoUrl } =
+      await this.fetchWebsiteCodeFromV0(editSystemPrompt, userMessage);
+    if (newV0ChatId && !newV0DemoUrl) {
+      newV0DemoUrl = await this.fetchV0DemoUrlByChatId(newV0ChatId);
+    }
     let websiteCode = websiteCodeRaw;
 
     const getPlaceholderUrl = await this.buildPlaceholderUrlGetter(website.websiteName || '', website.prompt || editPrompt);
@@ -631,22 +911,25 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
 
     const components = websiteCode.components || [];
     const viteConfig = websiteCode.viteConfig || null;
-    const htmlCode = websiteCode.html || websiteCode.HTML || website.htmlCode || '<div>Generated Website</div>';
-    const cssCode = websiteCode.css || websiteCode.CSS || website.cssCode || 'body { margin: 0; padding: 0; }';
-    const jsCode = websiteCode.js || websiteCode.JS || websiteCode.javascript || website.jsCode || '// JavaScript code';
+    const hasViteAppCode = !!(viteConfig?.mainJsx || viteConfig?.mainJs);
+    const htmlCode = websiteCode.html || websiteCode.HTML || website.htmlCode || '';
+    const cssCode = websiteCode.css || websiteCode.CSS || website.cssCode || '';
+    const jsCode = websiteCode.js || websiteCode.JS || websiteCode.javascript || website.jsCode || '';
 
-    const hasValidCode =
-      components.length > 0 ||
-      !!(viteConfig?.mainJsx || viteConfig?.mainJs) ||
-      (htmlCode !== '<div>Generated Website</div>' || cssCode !== 'body { margin: 0; padding: 0; }');
+    const hasLegacySnippet =
+      (typeof htmlCode === 'string' && htmlCode.trim().length > 0) ||
+      (typeof jsCode === 'string' && jsCode.trim().length > 0) ||
+      (typeof cssCode === 'string' && cssCode.trim().length > 0);
+    const hasValidCode = components.length > 0 || hasViteAppCode || hasLegacySnippet;
     if (!hasValidCode) {
       const err = new Error('The AI did not return valid website code for the edit. Try rephrasing your request.') as Error & { status?: number };
       err.status = 422;
       throw err;
     }
 
-    if (components.length > 0) {
-      website.components = components;
+    const storeAsVite = components.length > 0 || hasViteAppCode;
+    if (storeAsVite) {
+      website.components = components.length > 0 ? components : website.components;
       website.viteConfig = viteConfig || website.viteConfig;
       website.htmlCode = '';
       website.cssCode = '';
@@ -657,10 +940,12 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       website.jsCode = jsCode;
     }
     website.prompt = (website.prompt || '') + '\n[Edit] ' + editPrompt;
+    website.v0ChatId = newV0ChatId;
+    website.v0DemoUrl = newV0DemoUrl || undefined;
     const savedWebsite = await this.websiteRepository.save(website);
 
     let previewUrl: string | undefined;
-    if (components.length > 0) {
+    if (storeAsVite) {
       const buildResult = await this.getPreviewUrl(websiteId, userId);
       if (buildResult.success === true) {
         previewUrl = buildResult.previewUrl;
@@ -675,8 +960,8 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     return {
       ...savedWebsite,
       id: savedWebsite.id.toString(),
-      components: components.length > 0 ? components : savedWebsite.components,
-      viteConfig: components.length > 0 ? viteConfig : savedWebsite.viteConfig,
+      components: storeAsVite ? (components.length > 0 ? components : savedWebsite.components) : savedWebsite.components,
+      viteConfig: storeAsVite ? (viteConfig ?? savedWebsite.viteConfig) : savedWebsite.viteConfig,
       htmlCode: savedWebsite.htmlCode,
       cssCode: savedWebsite.cssCode,
       jsCode: savedWebsite.jsCode,
@@ -1210,11 +1495,10 @@ DESIGN (MANDATORY - PRODUCTION-READY):
   }
 
   /**
-   * Prefer `sync` to avoid post-create polling races (e.g. transient chat_not_found).
-   * You can still force async with V0_RESPONSE_MODE=async.
+   * For **diagnostics only** (`GET /website/v0-chat-check`). Website generate/edit **always** uses `async` + poll — see `invokeV0ChatCreate`.
    */
   private getV0ResponseMode(): 'sync' | 'async' {
-    return (process.env.V0_RESPONSE_MODE || 'sync').toLowerCase() === 'async' ? 'async' : 'sync';
+    return (process.env.V0_RESPONSE_MODE || 'async').toLowerCase() === 'sync' ? 'sync' : 'async';
   }
 
   private getV0ApiKeyOrThrow(): string {
@@ -1229,17 +1513,40 @@ DESIGN (MANDATORY - PRODUCTION-READY):
     return (process.env.V0_API_URL || 'https://api.v0.dev/v1').replace(/\/+$/, '');
   }
 
+  private createChatAxiosTimeoutMs(body: ChatsCreateRequest): number {
+    if (body.responseMode === 'async') {
+      return Number(process.env.V0_CREATE_ASYNC_TIMEOUT_MS) || 180000;
+    }
+    return Number(process.env.V0_CREATE_TIMEOUT_MS) || 600000;
+  }
+
   private async createV0ChatWithAxios(
     body: ChatsCreateRequest,
-    timeoutMs = Number(process.env.V0_CREATE_TIMEOUT_MS) || 300000,
+    timeoutMs?: number,
   ): Promise<ChatDetail> {
+    const ms = timeoutMs ?? this.createChatAxiosTimeoutMs(body);
     const res = await axios.post<ChatDetail>(`${this.getV0BaseUrl()}/chats`, body, {
       headers: {
         Authorization: `Bearer ${this.getV0ApiKeyOrThrow()}`,
         'Content-Type': 'application/json',
       },
-      timeout: timeoutMs,
+      timeout: ms,
     });
+    return res.data;
+  }
+
+  /** Same HTTP stack as create; avoids SDK/getById mismatch. v0 may return 404 until the chat is indexed (race after async create). */
+  private async getV0ChatByIdRest(chatId: string): Promise<ChatDetail> {
+    const url = `${this.getV0BaseUrl()}/chats/${encodeURIComponent(chatId)}`;
+    const timeout = Number(process.env.V0_GET_CHAT_TIMEOUT_MS) || 60_000;
+    const res = await axios.get<ChatDetail>(url, {
+      headers: { Authorization: `Bearer ${this.getV0ApiKeyOrThrow()}` },
+      timeout,
+      validateStatus: () => true,
+    });
+    if (res.status >= 400) {
+      throw new Error(`HTTP ${res.status}: ${JSON.stringify(res.data)}`);
+    }
     return res.data;
   }
 
@@ -1295,6 +1602,24 @@ DESIGN (MANDATORY - PRODUCTION-READY):
     return false;
   }
 
+  /** v0-hosted preview URL from create/get chat payload (official v0-clone uses `demo` or `latestVersion.demoUrl`). */
+  private extractV0DemoFromChatDetail(chat: ChatDetail): string | undefined {
+    const c = chat as ChatDetail & { demo?: string; latestVersion?: { demoUrl?: string } };
+    const u = c.demo || c.latestVersion?.demoUrl;
+    return typeof u === 'string' && u.trim().length > 0 ? u.trim() : undefined;
+  }
+
+  /** When create response has no demo yet, refetch chat (matches v0-clone flow after stream completes). */
+  private async fetchV0DemoUrlByChatId(chatId: string): Promise<string | undefined> {
+    try {
+      const detail = await this.getV0ChatByIdRest(chatId);
+      return this.extractV0DemoFromChatDetail(detail);
+    } catch (e: unknown) {
+      console.warn('WebsiteService - get chat for demo URL failed:', this.formatV0NetworkError(e));
+      return undefined;
+    }
+  }
+
   private formatV0NetworkError(err: unknown): string {
     const e = err as Error & { cause?: unknown; code?: string };
     const parts = [e?.message || String(err)];
@@ -1333,9 +1658,94 @@ DESIGN (MANDATORY - PRODUCTION-READY):
     }
   }
 
-  private async invokeV0ChatCreate(systemPrompt: string, userMessage: string): Promise<ChatDetail> {
+  /**
+   * After async create, v0 may return before the chat is readable (`chat_not_found`) or before files exist — poll with backoff.
+   */
+  private async waitForV0ChatReady(chat: ChatDetail, usedAsyncCreate: boolean): Promise<ChatDetail> {
+    if (!usedAsyncCreate) {
+      return chat;
+    }
+    if (this.getV0GeneratedFileRecords(chat).length > 0 || this.websiteCodeFromChatDetail(chat) != null) {
+      return chat;
+    }
+    const raw = chat as ChatDetail & { chatId?: string };
+    const chatId = chat.id || raw.chatId;
+    if (!chatId) {
+      return chat;
+    }
+    const baseInterval = Number(process.env.V0_POLL_INTERVAL_MS) || 3000;
+    const initialDelay = Number(process.env.V0_POLL_INITIAL_DELAY_MS) || 12_000;
+    const maxMs = Number(process.env.V0_POLL_MAX_MS) || 600_000;
+    const maxBackoff = Number(process.env.V0_POLL_MAX_BACKOFF_MS) || 45_000;
+    /** Stop hammering GET when id never becomes visible (v0 flakiness); outer loop retries with sync create. */
+    const maxNotFoundWallMs = Number(process.env.V0_POLL_MAX_NOT_FOUND_MS) || 180_000;
+    const deadline = Date.now() + maxMs;
+    let last = chat;
+    let notFoundBackoff = baseInterval;
+    let notFoundWallMs = 0;
+    console.log(
+      'WebsiteService - async mode: wait',
+      initialDelay,
+      'ms then poll GET /chats/:id until files/messages (chatId=',
+      chatId,
+      'maxMs=',
+      maxMs,
+      ')',
+    );
+    await new Promise((r) => setTimeout(r, initialDelay));
+    while (Date.now() < deadline) {
+      try {
+        last = await this.getV0ChatByIdRest(chatId);
+        notFoundBackoff = baseInterval;
+        notFoundWallMs = 0;
+      } catch (e: unknown) {
+        const msg = this.formatV0NetworkError(e);
+        const isNotFound = /chat_not_found|HTTP 404/i.test(msg);
+        if (isNotFound) {
+          const wait = Math.min(notFoundBackoff, maxBackoff);
+          if (notFoundWallMs + wait > maxNotFoundWallMs) {
+            console.warn(
+              'WebsiteService - poll gave up after ~',
+              maxNotFoundWallMs,
+              'ms of chat_not_found (id may never index); will retry with sync if configured',
+            );
+            break;
+          }
+          console.warn(
+            'WebsiteService - poll GET /chats/:id not ready (chat_not_found / 404); backing off',
+            wait,
+            'ms —',
+            msg.substring(0, 120),
+          );
+          await new Promise((r) => setTimeout(r, wait));
+          notFoundWallMs += wait;
+          notFoundBackoff = Math.min(notFoundBackoff * 2, maxBackoff);
+          continue;
+        }
+        console.warn('WebsiteService - poll GET /chats/:id:', msg);
+        await new Promise((r) => setTimeout(r, baseInterval));
+        continue;
+      }
+      const files = this.getV0GeneratedFileRecords(last);
+      if (files.length > 0 || this.websiteCodeFromChatDetail(last) != null) {
+        console.log('WebsiteService - poll complete, fileCount=', files.length);
+        return last;
+      }
+      await new Promise((r) => setTimeout(r, baseInterval));
+    }
+    console.warn('WebsiteService - poll stopped; using last chat state (may be empty → triggers retry/sync)');
+    return last;
+  }
+
+  /**
+   * `async` + poll first (fast when v0 indexes the chat). `sync` = one long POST until done (used on retries when poll never sees the chat).
+   */
+  private async invokeV0ChatCreate(
+    systemPrompt: string,
+    userMessage: string,
+    responseMode: 'sync' | 'async' = 'async',
+  ): Promise<ChatDetail> {
     const modelConfiguration = this.getV0ModelConfiguration();
-    const responseMode = this.getV0ResponseMode();
     const body: ChatsCreateRequest = {
       message: userMessage,
       system: systemPrompt,
@@ -1343,29 +1753,48 @@ DESIGN (MANDATORY - PRODUCTION-READY):
     };
     if (modelConfiguration) body.modelConfiguration = modelConfiguration;
     console.log(
-      'WebsiteService - waiting for v0 generation (can take 1-3 mins)...',
+      'WebsiteService - v0 chats.create',
       'mode=',
       responseMode,
+      responseMode === 'async'
+        ? '(then poll getById — avoids long single HTTP response / headers timeout)'
+        : '(single long request — may hit client timeouts)',
       'promptLength=',
       userMessage.length,
     );
     let result: ChatDetail | ReadableStream;
+    const useAxiosFirst = process.env.V0_CREATE_USE_AXIOS_FIRST !== '0';
     try {
-      result = await this.v0Platform.chats.create(body);
-    } catch (e: any) {
-      const msg = String(e?.message || e || '');
-      if (/UND_ERR_HEADERS_TIMEOUT|UND_ERR_CONNECT_TIMEOUT|ETIMEDOUT|ENOTFOUND/i.test(msg)) {
-        console.warn('WebsiteService - SDK fetch timed out; retrying create via axios with extended timeout...');
+      if (useAxiosFirst) {
         result = await this.createV0ChatWithAxios(body);
       } else {
-        throw e;
+        try {
+          result = await this.v0Platform.chats.create(body);
+        } catch (e: unknown) {
+          const msg = this.formatV0NetworkError(e);
+          if (/UND_ERR_HEADERS_TIMEOUT|UND_ERR_CONNECT_TIMEOUT|ETIMEDOUT|ENOTFOUND/i.test(msg)) {
+            console.warn('WebsiteService - SDK fetch failed; retrying create via axios...');
+            result = await this.createV0ChatWithAxios(body);
+          } else {
+            throw e;
+          }
+        }
       }
+    } catch (e: unknown) {
+      throw e;
     }
-    console.log('WebsiteService - v0 generation complete, chatId=', (result as ChatDetail)?.id || '(unknown)');
     if (result != null && typeof (result as ReadableStream).getReader === 'function') {
-      throw new Error(`v0.chats.create returned a stream; expected JSON (responseMode: ${responseMode}).`);
+      throw new Error(`v0.chats.create returned a stream; set V0_RESPONSE_MODE=sync|async JSON modes only (got ${responseMode}).`);
     }
-    return result as ChatDetail;
+    let chat = result as ChatDetail;
+    const r = chat as ChatDetail & { chat?: { id?: string } };
+    if (!chat.id && r.chat?.id) {
+      chat = { ...chat, id: r.chat.id } as ChatDetail;
+      console.log('WebsiteService - normalized chat id from nested response.chat.id');
+    }
+    chat = await this.waitForV0ChatReady(chat, responseMode === 'async');
+    console.log('WebsiteService - v0 chat ready, chatId=', chat?.id || '(unknown)');
+    return chat;
   }
 
   private websiteCodeFromChatDetail(chat: ChatDetail): any {
@@ -1389,7 +1818,7 @@ DESIGN (MANDATORY - PRODUCTION-READY):
   private async fetchWebsiteCodeFromV0(
     systemPrompt: string,
     userPrompt: string,
-  ): Promise<{ responseContent: string; websiteCode: any }> {
+  ): Promise<{ responseContent: string; websiteCode: any; v0ChatId: string; v0DemoUrl?: string }> {
     const MAX_V0_ATTEMPTS = Number(process.env.V0_MAX_RETRIES) || 3;
     const RETRY_DELAY_MS = 1500;
     const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -1399,9 +1828,20 @@ DESIGN (MANDATORY - PRODUCTION-READY):
 
     for (let attempt = 1; attempt <= MAX_V0_ATTEMPTS; attempt++) {
       console.log('WebsiteService - v0 Platform API attempt', attempt, 'of', MAX_V0_ATTEMPTS);
+      const syncOnRetry = process.env.V0_WEBSITE_RETRY_WITH_SYNC !== '0';
+      const mode: 'sync' | 'async' = syncOnRetry && attempt > 1 ? 'sync' : 'async';
+      if (attempt > 1 && mode === 'sync') {
+        console.log(
+          'WebsiteService - attempt',
+          attempt,
+          'uses sync chats.create (same prompt) because async+poll can hit persistent chat_not_found — one long request,',
+          Number(process.env.V0_CREATE_TIMEOUT_MS) || 600000,
+          'ms timeout',
+        );
+      }
       let chat: ChatDetail;
       try {
-        chat = await this.invokeV0ChatCreate(systemPrompt, userPrompt);
+        chat = await this.invokeV0ChatCreate(systemPrompt, userPrompt, mode);
       } catch (e: any) {
         console.warn('WebsiteService - v0 request error:', this.formatV0NetworkError(e));
         if (this.isV0NonRetryableHttpError(e)) {
@@ -1447,14 +1887,23 @@ DESIGN (MANDATORY - PRODUCTION-READY):
         websiteCode = this.convertV0FilesToStructure(websiteCode);
       }
 
+      const hasNonEmptyLegacyHtml =
+        typeof websiteCode?.html === 'string' && websiteCode.html.trim().length > 0;
       const hasValidCode =
         (websiteCode?.components?.length > 0) ||
         (websiteCode?.files?.length > 0) ||
         !!(websiteCode?.viteConfig?.mainJsx || websiteCode?.viteConfig?.mainJs) ||
-        (websiteCode?.html && websiteCode.html !== '<div>Generated Website</div>');
+        hasNonEmptyLegacyHtml ||
+        (typeof websiteCode?.js === 'string' && websiteCode.js.trim().length > 0) ||
+        (typeof websiteCode?.css === 'string' && websiteCode.css.trim().length > 0);
       if (hasValidCode) {
         console.log('WebsiteService - Valid code received on attempt', attempt);
-        return { responseContent, websiteCode };
+        return {
+          responseContent,
+          websiteCode,
+          v0ChatId: chat.id,
+          v0DemoUrl: this.extractV0DemoFromChatDetail(chat),
+        };
       }
 
       console.warn('WebsiteService - No valid code on attempt', attempt);
@@ -1731,15 +2180,15 @@ DESIGN (MANDATORY - PRODUCTION-READY):
                    response.match(/<script>([\s\S]*?)<\/script>/i);
 
     const result = {
-      html: htmlMatch ? htmlMatch[1].trim() : '<div>Generated Website</div>',
-      css: cssMatch ? cssMatch[1].trim() : 'body { margin: 0; padding: 0; }',
-      js: jsMatch ? jsMatch[1].trim() : '// JavaScript code',
+      html: htmlMatch ? htmlMatch[1].trim() : '',
+      css: cssMatch ? cssMatch[1].trim() : '',
+      js: jsMatch ? jsMatch[1].trim() : '',
     };
     
-    console.log('WebsiteService.extractCodeFromResponse - Extracted (legacy mode):', {
-      hasHtml: result.html !== '<div>Generated Website</div>',
-      hasCss: result.css !== 'body { margin: 0; padding: 0; }',
-      hasJs: result.js !== '// JavaScript code'
+    console.log('WebsiteService.extractCodeFromResponse - Extracted (fence/markdown scrape):', {
+      hasHtml: result.html.length > 0,
+      hasCss: result.css.length > 0,
+      hasJs: result.js.length > 0,
     });
     
     return result;
@@ -2079,9 +2528,13 @@ body {
 
     const components = website.components || [];
     const viteConfig = website.viteConfig;
+    const hasViteEntry = !!(viteConfig?.mainJsx || viteConfig?.mainJs);
 
-    if (components.length === 0 || !viteConfig) {
-      return { success: false, error: 'Real-build preview is only available for component-based (Vite) websites.' };
+    if (!viteConfig || (components.length === 0 && !hasViteEntry)) {
+      return {
+        success: false,
+        error: 'Real-build preview needs viteConfig with mainJsx/mainJs and/or component files.',
+      };
     }
 
     const baseDir = path.join(process.cwd(), 'generated_sites', userId, websiteId);

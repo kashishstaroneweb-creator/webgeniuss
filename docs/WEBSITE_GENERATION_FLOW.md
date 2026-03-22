@@ -53,7 +53,7 @@ So when the code is great: **same data, same single HTML string, same single scr
 ### 2.1 Input and API
 
 - **Enhance prompt:** `enhanceUserPrompt(prompt)` — adds design/functionality (shop, calculator, todo, etc.).
-- **v0 Platform API call:** official [`v0-sdk`](https://v0.app/docs/api/platform/packages/v0-sdk) `createClient({ apiKey, baseUrl })` (same stack as `import { v0 } from 'v0-sdk'`, plus **`V0_API_URL`** and legacy key) → `chats.create({ system, message, responseMode: 'sync', modelConfiguration? })`, then `chats.getById` while the version is pending. **`OPENAI_API_KEY`** is copied to **`V0_API_KEY`** in `WebsiteService` when needed. Optional model: **`V0_PLATFORM_MODEL_ID`** only (`v0-max`, etc.).
+- **v0 Platform API call:** official [`v0-sdk`](https://v0.app/docs/api/platform/packages/v0-sdk) `createClient` → `chats.create` with a **large `system` prompt** (JSON/Vite shape) and **`responseMode: 'async'`** on attempt 1 (axios `POST /chats`, then `GET /chats/:id` polling; retries may use **`sync`**). See **`backend/README.md`** for env vars. **`OPENAI_API_KEY`** may be copied to **`V0_API_KEY`**. Optional **`V0_PLATFORM_MODEL_ID`**.
 - **Response:** Chat JSON with **`latestVersion.files`** (`name` + `content`) → `normalizeV0SdkFiles` → `convertV0FilesToStructure`; fallback: parse `text` / last assistant `content` as JSON (legacy).
 
 ### 2.2 Parse response
@@ -180,4 +180,21 @@ Legacy: only **replaceBrokenImageUrls** on `html`, `css`, `js`.
 
 ---
 
-*Doc kept under 300 lines; see CODE_EXTRACTION_AND_PREVIEW_FLOW.md and PREVIEW_ERRORS_WHY_AND_STRATEGY.md for more detail.*
+## 7. Official [v0-clone](https://github.com/vercel/v0-sdk/tree/main/examples/v0-clone) vs WebGenius
+
+The Vercel sample app (`examples/v0-clone`) is the **reference UX** for the same Platform API. Differences that matter for timeouts and consistency:
+
+| Area | v0-clone (`app/api/chat/route.ts`) | WebGenius |
+|------|-------------------------------------|-----------|
+| **User message** | Raw `message` only (optional `attachments`). **No** giant system prompt forcing a JSON schema. | Custom **`system`** prompt requiring `components` + `viteConfig` (or parsed equivalents). |
+| **Primary mode** | **`experimental_stream`** — `chats.create` / `sendMessage` return a **`ReadableStream`**, proxied as **`text/event-stream`** to the browser. Avoids waiting on one JSON body for minutes. | **`async`** create + **`GET /chats/:id`** polling; **retry with `sync`** if poll fails. No SSE stream yet. |
+| **Fallback mode** | **`sync`** `chats.create` when streaming is off (same long-request risk as any sync client). | Explicit **`sync`** on attempts 2+ (`V0_WEBSITE_RETRY_WITH_SYNC`). |
+| **Continuations** | **`v0.chats.sendMessage({ chatId, message, ... })`** for follow-ups in the **same** v0 chat. | **Edit** resends **full site JSON** in one message (no v0 thread continuity in the same shape as the clone). |
+| **Persistence** | DB stores **ownership** of `v0ChatId`; **v0** holds chat + files. | **Mongo `Website`** + **`generated_sites/`** duplicate extracted code. |
+| **Preview** | After stream / load, **`GET` chat** → **`demo` / `latestVersion.demoUrl`** → iframe. UI uses **`@v0-sdk/react`** for stream tasks. | **`v0DemoUrl`** iframe when present; else **WebsitePreview** (Babel) and/or **local Vite build** preview. |
+
+**Why the clone feels smoother:** streaming keeps the **HTTP connection alive with incremental bytes**, not “no headers until everything is done.” WebGenius approximates that with **async + short GETs** and **sync retry**, but **full parity** means adding a **streaming proxy route** (Nest) and **SSE + `@v0-sdk/react`** on the frontend, then optionally **thinning** the pipeline to “v0 owns the chat” like the clone.
+
+---
+
+*Doc kept under ~350 lines; see CODE_EXTRACTION_AND_PREVIEW_FLOW.md and PREVIEW_ERRORS_WHY_AND_STRATEGY.md for more detail.*

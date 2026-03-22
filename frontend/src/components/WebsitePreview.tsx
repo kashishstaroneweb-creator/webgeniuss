@@ -248,15 +248,20 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
               .replace(/=\s*\[\s*\]\s*([a-zA-Z])(?=\s*[,)\}\]])/g, '= [] ');
           };
           
-          // Check if we have component-based structure
-          if (components && components.length > 0) {
-            // Check if components use React (JSX) or vanilla JS
-            const usesReact = components.some(c => 
-              c.language === 'jsx' || 
-              c.code.includes('import React') || 
-              c.code.includes('from \'react\'') ||
-              c.code.includes('<') && c.code.includes('className=')
-            );
+          // Vite/React preview: named components and/or entry in viteConfig (mainJsx/mainJs)
+          const siteComponents = Array.isArray(components) ? components : [];
+          const hasViteEntry = !!(viteConfig?.mainJsx || viteConfig?.mainJs);
+          if (siteComponents.length > 0 || hasViteEntry) {
+            const usesReact =
+              siteComponents.length === 0
+                ? hasViteEntry
+                : siteComponents.some(
+                    (c) =>
+                      c.language === 'jsx' ||
+                      c.code.includes('import React') ||
+                      c.code.includes("from 'react'") ||
+                      (c.code.includes('<') && c.code.includes('className=')),
+                  );
             
             if (usesReact) {
               // React components - use React CDN with Babel
@@ -270,7 +275,7 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
                   `>${before}{'$' + ${expr}}${after}<`
                 );
 
-              const processedComponents = components
+              const processedComponents = siteComponents
                 .filter(c => c.language === 'jsx' || c.language === 'js' || c.language === 'tsx' || (!c.language && (/\\.(jsx|tsx)$/.test(c.path || '') || (c.code && (c.code.includes('from \'react\'') || c.code.includes('className'))))))
                 .map(c => {
                   // ALL transforms BEFORE any escaping (template literals → concat, assignment fixes)
@@ -371,7 +376,7 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
                 processedMain = transformJsxAttributeTemplateLiterals(processedMain);
                 processedMain = sanitizeInvalidAssignment(processedMain);
                 processedMain = wrapAdjacentJsxInFragment(processedMain);
-                const componentNamesForImports = components
+                const componentNamesForImports = siteComponents
                   .filter(c => c.language === 'jsx' || c.language === 'js' || c.language === 'tsx')
                   .map(c => c.name.replace(/\s+/g, ''));
                 // Case-insensitive set so "Header" and "header" both treated as component (avoid placeholder for either)
@@ -441,7 +446,7 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
                 
                 // Always ensure App component is defined as a proper function
                 // Get component names
-                const componentNames = components
+                const componentNames = siteComponents
                   .filter(c => c.language === 'jsx' || c.language === 'js')
                   .map(c => c.name.replace(/\s+/g, ''));
                 
@@ -536,7 +541,7 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
                 appCode = escapeForEmbedInScript(processedMain);
               } else {
                 // Create App component from individual components
-                const componentNames = components
+                const componentNames = siteComponents
                   .filter(c => c.language === 'jsx' || c.language === 'js')
                   .map(c => c.name.replace(/\s+/g, ''));
                 
@@ -559,7 +564,7 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
               }
               
               // Component names in same order as processedComponents (for IIFE wrapper)
-              const reactComponentNames = components
+              const reactComponentNames = siteComponents
                 .filter(c => c.language === 'jsx' || c.language === 'js' || c.language === 'tsx' || (!c.language && (/\\.(jsx|tsx)$/.test(c.path || '') || (c.code && (c.code.includes('from \'react\'') || c.code.includes('className'))))))
                 .map(c => c.name.replace(/\s+/g, ''));
               // Escape once for embedding (code is already fully transformed above)
@@ -589,7 +594,7 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
               }
               // Dynamically find identifiers that are used but not declared (any data variable the generated code references)
               const reactUserCodeStr = componentDefinitions + '\n\n' + appCode;
-              const reactComponentNamesList = components
+              const reactComponentNamesList = siteComponents
                 .filter(c => c.language === 'jsx' || c.language === 'js' || c.language === 'tsx')
                 .map(c => c.name.replace(/\s+/g, ''));
               let usedButUndeclared = getUsedButUndeclaredIdentifiers(reactUserCodeStr, reactComponentNamesList);
@@ -711,7 +716,7 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
               const styleCss = viteConfig?.styleCss || '';
               
               // Convert component exports to functions that can be called
-              const componentFunctions = components
+              const componentFunctions = siteComponents
                 .filter(c => c.language === 'js')
                 .map(c => {
                 // Extract function name - use component name as function name
@@ -888,19 +893,39 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
 </html>`;
             }
           } else {
-            // Legacy HTML/CSS/JS format
+            // Standalone HTML/CSS/JS only when provided (no fake placeholder page)
             const hasFullHtml = html && (html.trim().toLowerCase().includes('<!doctype') || html.trim().toLowerCase().includes('<html'));
-            
-            if (hasFullHtml && html) {
-            content = html;
-            if (!html.includes('<style>') && css) {
-              content = content.replace('</head>', `<style>${escapeForEmbed(css)}</style></head>`);
-            }
-            if (!html.includes('<script>') && js) {
-              content = content.replace('</body>', `<script>${escapeForEmbedInScript(js)}</script></body>`);
-            }
-          } else {
-            content = `<!DOCTYPE html>
+            const hasAnySnippet =
+              (html && html.trim().length > 0) ||
+              (css && css.trim().length > 0) ||
+              (js && js.trim().length > 0);
+            if (!hasAnySnippet) {
+              content = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeForEmbed(websiteName || 'Preview')}</title>
+  <style>
+    body { font-family: system-ui, sans-serif; padding: 24px; max-width: 640px; margin: 0 auto; line-height: 1.5; color: #333; }
+    code { background: #f4f4f5; padding: 2px 6px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h2>No preview payload</h2>
+  <p>This site has no <code>components</code>, no <code>viteConfig.mainJsx</code> / <code>mainJs</code>, and no HTML/CSS/JS snippets. Check the API response or generation logs.</p>
+</body>
+</html>`;
+            } else if (hasFullHtml && html) {
+              content = html;
+              if (!html.includes('<style>') && css) {
+                content = content.replace('</head>', `<style>${escapeForEmbed(css)}</style></head>`);
+              }
+              if (!html.includes('<script>') && js) {
+                content = content.replace('</body>', `<script>${escapeForEmbedInScript(js)}</script></body>`);
+              }
+            } else {
+              content = `<!DOCTYPE html>
             <html lang="en">
             <head>
               <meta charset="UTF-8">
