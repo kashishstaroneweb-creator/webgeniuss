@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/store/authStore';
 import api from '@/lib/api';
 import Button from '@/components/ui/Button';
@@ -242,6 +242,16 @@ const Login = () => {
                 required
                 className="transition-all duration-200"
               />
+              {isLogin && (
+                <div className="flex justify-end">
+                  <Link
+                    to="/forgot-password"
+                    className="text-sm text-accent hover:underline transition-colors"
+                  >
+                    Forgot password?
+                  </Link>
+                </div>
+              )}
               {error && <p className="text-sm text-destructive">{error}</p>}
               <Button
                 type="submit"

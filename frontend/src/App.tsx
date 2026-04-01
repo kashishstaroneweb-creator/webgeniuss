@@ -4,6 +4,7 @@ import { useAuthStore } from '@/store/authStore';
 import { AppSidebar } from '@/components/AppSidebar';
 import { AppHeader } from '@/components/AppHeader';
 import Login from '@/pages/Login';
+import ForgotPassword from '@/pages/ForgotPassword';
 import Dashboard from '@/pages/Dashboard';
 import Profile from '@/pages/Profile';
 import History from '@/pages/History';
@@ -94,6 +95,10 @@ function App() {
     <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <Routes>
         <Route path="/login" element={isAuthenticated ? <Navigate to="/dashboard" /> : <Login />} />
+        <Route
+          path="/forgot-password"
+          element={isAuthenticated ? <Navigate to="/dashboard" /> : <ForgotPassword />}
+        />
         <Route path="/auth/callback" element={<AuthCallback />} />
         <Route
           path="/dashboard"

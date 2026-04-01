@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useAuthStore } from '@/store/authStore';
 import { useSidebarStore } from '@/store/sidebarStore';
@@ -84,9 +84,6 @@ const Dashboard = () => {
   const [activeComponentIndex, setActiveComponentIndex] = useState(0);
   const [stats, setStats] = useState({ totalProjects: 0, generations: 0, creditsUsed: 0, creditsRemaining: 5 });
   const [loadingHistoryWebsite, setLoadingHistoryWebsite] = useState(false);
-  const [realPreviewUrl, setRealPreviewUrl] = useState<string | null>(null);
-  const [realPreviewLoading, setRealPreviewLoading] = useState(false);
-  const [realPreviewError, setRealPreviewError] = useState<string | null>(null);
   const [realPreviewFullscreen, setRealPreviewFullscreen] = useState(false);
   /** Steps for left-panel processing status: thinking → generating files → done */
   const [generationStep, setGenerationStep] = useState<'thinking' | 'generating' | 'done'>('thinking');
@@ -109,9 +106,6 @@ const Dashboard = () => {
     'Change the hero title to Welcome',
     'Add a footer with social links',
   ];
-
-  /** After edit we get previewUrl from response; skip refetch so we don't build twice */
-  const previewUrlFromEditIdRef = useRef<string | null>(null);
 
   // Advance generation step for "processing" feel (v0-style) while loading
   useEffect(() => {
@@ -161,63 +155,6 @@ const Dashboard = () => {
     };
     loadHistoryWebsite();
   }, [websiteIdFromUrl, setCollapsed]);
-
-  // Reset real preview when switching website or closing
-  useEffect(() => {
-    if (!generatedWebsite) {
-      setRealPreviewUrl(null);
-      setRealPreviewError(null);
-      return;
-    }
-  }, [generatedWebsite?.id]);
-
-  // Fetch real-build preview URL when showing preview for a component-based website (skip if v0 hosts the demo — official v0-clone pattern)
-  useEffect(() => {
-    if (
-      !generatedWebsite?.id ||
-      !generatedWebsite?.components?.length ||
-      showCodeView ||
-      !!generatedWebsite?.v0DemoUrl
-    ) {
-      return;
-    }
-    if (previewUrlFromEditIdRef.current === generatedWebsite.id) {
-      previewUrlFromEditIdRef.current = null;
-      return;
-    }
-    const userId = generatedWebsite.userId || '691df5ddac69fc46beca44b3';
-    let cancelled = false;
-    setRealPreviewLoading(true);
-    setRealPreviewError(null);
-    api
-      .get(`/website/${generatedWebsite.id}/preview`, { params: { userId } })
-      .then((res) => {
-        if (!cancelled && res.data?.previewUrl) {
-          setRealPreviewUrl(res.data.previewUrl);
-          setRealPreviewError(null);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          const msg = err.response?.data?.message || err.response?.data?.error || err.message || 'Preview build failed';
-          const log = err.response?.data?.log;
-          setRealPreviewError(log ? `${msg}: ${log}` : msg);
-          setRealPreviewUrl(null);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setRealPreviewLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    generatedWebsite?.id,
-    generatedWebsite?.components?.length,
-    generatedWebsite?.userId,
-    generatedWebsite?.v0DemoUrl,
-    showCodeView,
-  ]);
 
   useEffect(() => {
     // Fetch stats
@@ -456,28 +393,16 @@ const Dashboard = () => {
 
   const handleEdit = async () => {
     if (!generatedWebsite?.id || !addOnPrompt.trim()) return;
-    const userId = (user as any)?.id ?? (user as any)?._id ?? undefined;
     setEditLoading(true);
     try {
-      const res = await api.post<GeneratedWebsite & { message?: string; previewUrl?: string }>(
+      const res = await api.post<GeneratedWebsite & { message?: string }>(
         `/website/${generatedWebsite.id}/edit`,
-        { editPrompt: addOnPrompt.trim(), userId },
+        { editPrompt: addOnPrompt.trim() },
         { timeout: 300000 }
       );
       const nextId = res.data.id || generatedWebsite.id;
       setGeneratedWebsite({ ...res.data, id: nextId });
       setAddOnPrompt('');
-      if (res.data.previewUrl) {
-        const separator = res.data.previewUrl.includes('?') ? '&' : '?';
-        setRealPreviewUrl(`${res.data.previewUrl}${separator}t=${Date.now()}`);
-        setRealPreviewError(null);
-        setRealPreviewLoading(false);
-        previewUrlFromEditIdRef.current = nextId;
-      } else {
-        setRealPreviewUrl(null);
-        setRealPreviewError(null);
-        setRealPreviewLoading(true);
-      }
     } catch (error: any) {
       const msg = error.response?.data?.message || error.message || 'Failed to apply changes';
       alert(msg);
@@ -774,23 +699,16 @@ const Dashboard = () => {
                 </div>
                 <div className="flex items-center gap-2 text-sm">
                   {(() => {
-                    const hostedV0 =
-                      !!(generatedWebsite?.v0DemoUrl && !showCodeView);
-                    const needsBuild =
-                      !!(
-                        generatedWebsite?.components &&
-                        generatedWebsite.components.length > 0 &&
-                        !showCodeView &&
-                        !hostedV0
-                      );
-                    const buildingPreview = needsBuild && realPreviewLoading;
-                    const previewReady = !!generatedWebsite && (hostedV0 || !buildingPreview);
+                    const hostedV0 = !!(generatedWebsite?.v0DemoUrl && !showCodeView);
+                    const previewReady =
+                      !!generatedWebsite &&
+                      !showCodeView &&
+                      (hostedV0 ||
+                        !!(generatedWebsite.components?.length || generatedWebsite.viteConfig?.mainJsx || generatedWebsite.viteConfig?.mainJs || generatedWebsite.htmlCode));
                     return (
                       <>
                         {previewReady ? (
                           <span className="text-green-500">✓</span>
-                        ) : buildingPreview ? (
-                          <span className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
                         ) : (
                           <span className="w-4 h-4 rounded-full border border-muted-foreground/40" />
                         )}
@@ -799,9 +717,7 @@ const Dashboard = () => {
                             ? hostedV0
                               ? 'Preview ready (v0 hosted)'
                               : 'Preview ready'
-                            : buildingPreview
-                              ? 'Building preview...'
-                              : 'Rendering preview...'}
+                            : 'Rendering preview...'}
                         </span>
                       </>
                     );
@@ -1281,9 +1197,9 @@ const Dashboard = () => {
                         )}
                       </div>
                     ) : (
-                      // Preview View: v0-hosted (official clone) → local Vite build → quick preview
+                      // Preview: v0 hosted iframe when available; otherwise client-side WebsitePreview (DB payload — no server disk build)
                       <div className="flex-1 overflow-auto h-full flex flex-col min-h-[600px]">
-                        {generatedWebsite?.v0DemoUrl && (
+                        {generatedWebsite?.v0DemoUrl ? (
                           <>
                             {realPreviewFullscreen ? (
                               <div className="fixed inset-0 z-50 bg-background flex flex-col">
@@ -1333,78 +1249,7 @@ const Dashboard = () => {
                               </div>
                             )}
                           </>
-                        )}
-                        {!generatedWebsite?.v0DemoUrl && realPreviewLoading && (
-                          <div className="flex-1 flex items-center justify-center min-h-[600px]">
-                            <GeneratingLoader variant="building" />
-                          </div>
-                        )}
-                        {!generatedWebsite?.v0DemoUrl && !realPreviewLoading && realPreviewUrl && (
-                          <>
-                            {realPreviewFullscreen ? (
-                              <div className="fixed inset-0 z-50 bg-background flex flex-col">
-                                <div className="flex items-center justify-between p-4 border-b bg-card flex-shrink-0">
-                                  <h2 className="text-lg font-semibold">{generatedWebsite.websiteName || 'Website Preview'}</h2>
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() => setRealPreviewFullscreen(false)}
-                                    className="gap-2"
-                                  >
-                                    <Minimize2 className="h-4 w-4" />
-                                    Exit Fullscreen
-                                  </Button>
-                                </div>
-                                <iframe
-                                  src={realPreviewUrl}
-                                  title="Website Preview"
-                                  className="flex-1 w-full border-0 min-h-0"
-                                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-                                />
-                              </div>
-                            ) : (
-                              <div className="border rounded-lg overflow-hidden bg-card flex flex-col flex-1 min-h-[600px]">
-                                <div className="flex items-center justify-between p-3 border-b bg-muted/50 flex-shrink-0">
-                                  <h3 className="text-sm font-medium">{generatedWebsite.websiteName || 'Preview'}</h3>
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() => setRealPreviewFullscreen(true)}
-                                    className="h-7 px-2"
-                                  >
-                                    <Maximize2 className="h-3 w-3" />
-                                  </Button>
-                                </div>
-                                <iframe
-                                  src={realPreviewUrl}
-                                  title="Website Preview"
-                                  className="w-full flex-1 min-h-[500px] border-0"
-                                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-                                />
-                              </div>
-                            )}
-                          </>
-                        )}
-                        {!generatedWebsite?.v0DemoUrl && !realPreviewLoading && realPreviewError && (
-                          <div className="p-4 space-y-2">
-                            <p className="text-sm text-destructive">{realPreviewError}</p>
-                            <p className="text-xs text-muted-foreground">Showing quick preview instead.</p>
-                            <WebsitePreview
-                              html={generatedWebsite.htmlCode}
-                              css={generatedWebsite.cssCode}
-                              js={generatedWebsite.jsCode}
-                              components={generatedWebsite.components}
-                              viteConfig={generatedWebsite.viteConfig}
-                              websiteName={generatedWebsite.websiteName}
-                              prompt={generatedWebsite.prompt}
-                              className="h-full min-h-[400px]"
-                            />
-                          </div>
-                        )}
-                        {!generatedWebsite?.v0DemoUrl &&
-                          !realPreviewLoading &&
-                          !realPreviewUrl &&
-                          !realPreviewError && (
+                        ) : (
                           <WebsitePreview
                             html={generatedWebsite.htmlCode}
                             css={generatedWebsite.cssCode}

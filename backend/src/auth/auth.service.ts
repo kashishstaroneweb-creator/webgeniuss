@@ -21,8 +21,10 @@ import { randomUUID } from 'crypto';
 import { SignUpDto } from './dto/signup.dto';
 import { LoginDto } from './dto/login.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 
-type OtpPurpose = 'signup' | 'login';
+type OtpPurpose = 'signup' | 'login' | 'password_reset';
 
 @Injectable()
 export class AuthService {
@@ -85,10 +87,19 @@ export class AuthService {
       throw new InternalServerErrorException('Email service is not configured');
     }
 
+    const purposeTitle =
+      purpose === 'signup'
+        ? 'Account Verification'
+        : purpose === 'password_reset'
+          ? 'Password reset'
+          : 'Login Verification';
+
     const subject =
       purpose === 'signup'
         ? 'Verify your WebGenius account'
-        : 'Your WebGenius login verification code'; 
+        : purpose === 'password_reset'
+          ? 'Reset your WebGenius password'
+          : 'Your WebGenius login verification code';
 
     const html = `
       <div style="
@@ -108,7 +119,7 @@ export class AuthService {
           font-size: 28px;
           margin-bottom: 10px;
         ">
-          WebGenius ${purpose === 'signup' ? 'Account Verification' : 'Login Verification'}
+          WebGenius ${purposeTitle}
         </h2>
 
         <p style="text-align: center; font-size: 16px; opacity: 0.95; color: #d1d5db;">
@@ -178,7 +189,8 @@ export class AuthService {
     user.otpSessionToken = sessionToken;
     user.otpPurpose = purpose;
 
-    await this.userRepository.save(user);    await this.sendOtpEmail(user.email, otp, purpose);
+    await this.userRepository.save(user);
+    await this.sendOtpEmail(user.email, otp, purpose);
 
     return {
       sessionToken,
@@ -265,6 +277,80 @@ export class AuthService {
     };
   }
 
+  async forgotPassword(dto: ForgotPasswordDto) {
+    const user = await this.userRepository.findOne({
+      where: { email: dto.email },
+    });
+
+    if (user?.password) {
+      const otpDetails = await this.initiateOtpFlow(user, 'password_reset');
+      return {
+        message: 'Verification code sent. Enter it below with your new password.',
+        otpRequired: true,
+        email: user.email,
+        otpSession: otpDetails.sessionToken,
+        expiresAt: otpDetails.expiresAt,
+      };
+    }
+
+    return {
+      message:
+        'If an account exists with this email, you will receive a verification code shortly.',
+    };
+  }
+
+  async resetPassword(dto: ResetPasswordDto) {
+    const user = await this.userRepository.findOne({
+      where: { email: dto.email },
+    });
+
+    if (!user || !user.password) {
+      throw new UnauthorizedException('Invalid or expired reset session');
+    }
+
+    if (user.otpPurpose !== 'password_reset') {
+      throw new UnauthorizedException('Invalid or expired reset session');
+    }
+
+    if (!user.otpCode || !user.otpSessionToken) {
+      throw new UnauthorizedException('Invalid or expired reset session');
+    }
+
+    if (user.otpSessionToken !== dto.sessionToken) {
+      throw new UnauthorizedException('Invalid or expired reset session');
+    }
+
+    if (!user.otpExpiresAt || user.otpExpiresAt.getTime() < Date.now()) {
+      throw new UnauthorizedException('OTP has expired');
+    }
+
+    const isOtpValid = await bcrypt.compare(dto.otp, user.otpCode);
+    if (!isOtpValid) {
+      throw new UnauthorizedException('Invalid OTP');
+    }
+
+    user.password = await bcrypt.hash(dto.newPassword, 10);
+    user.otpCode = null;
+    user.otpExpiresAt = null;
+    user.otpSessionToken = null;
+    user.otpPurpose = null;
+    user.isOtpVerified = true;
+
+    await this.userRepository.save(user);
+
+    const sanitizedUser = this.sanitizeUser(user);
+    const accessToken = this.jwtService.sign({
+      sub: sanitizedUser.id,
+      email: user.email,
+    });
+
+    return {
+      user: sanitizedUser,
+      access_token: accessToken,
+      message: 'Password updated successfully.',
+    };
+  }
+
   async verifyOtp(verifyOtpDto: VerifyOtpDto) {
     const user = await this.userRepository.findOne({
       where: { email: verifyOtpDto.email },
@@ -276,6 +362,12 @@ export class AuthService {
 
     if (user.otpSessionToken !== verifyOtpDto.sessionToken) {
       throw new UnauthorizedException('Invalid OTP session');
+    }
+
+    if (user.otpPurpose === 'password_reset') {
+      throw new UnauthorizedException(
+        'This code is for password reset. Complete reset on the forgot-password page.',
+      );
     }
 
     if (!user.otpExpiresAt || user.otpExpiresAt.getTime() < Date.now()) {

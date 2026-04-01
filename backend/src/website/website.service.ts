@@ -7,13 +7,9 @@ import { ObjectId } from 'mongodb';
 import { createClient, type ChatDetail, type ChatsCreateRequest } from 'v0-sdk';
 import * as fs from 'fs';
 import * as path from 'path';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import { Transform } from 'stream';
 import type { Response } from 'express';
 import axios, { type AxiosResponse } from 'axios';
-
-const execAsync = promisify(exec);
 
 @Injectable()
 export class WebsiteService {
@@ -441,12 +437,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       }),
     );
 
-    const generatedPath = storeAsVite
-      ? await this.saveViteProject(userId, savedWebsite.id.toString(), components, viteConfig, websiteName)
-      : await this.saveWebsiteFiles(userId, savedWebsite.id.toString(), htmlCode, cssCode, jsCode);
-
-    savedWebsite.generatedPath = generatedPath;
-    await this.websiteRepository.save(savedWebsite);
+    // Preview: v0 hosted URL when present, else client-side WebsitePreview from DB payload — no server disk.
 
     console.log('WebsiteService.persistWebsiteAfterV0Generation - Success, saved website ID:', savedWebsite.id);
     return {
@@ -944,18 +935,6 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     website.v0DemoUrl = newV0DemoUrl || undefined;
     const savedWebsite = await this.websiteRepository.save(website);
 
-    let previewUrl: string | undefined;
-    if (storeAsVite) {
-      const buildResult = await this.getPreviewUrl(websiteId, userId);
-      if (buildResult.success === true) {
-        previewUrl = buildResult.previewUrl;
-      } else {
-        console.warn('WebsiteService.editWebsite - Preview build failed after edit:', buildResult.error, buildResult.log);
-      }
-    } else {
-      await this.saveWebsiteFiles(userId, websiteId, htmlCode, cssCode, jsCode);
-    }
-
     console.log('WebsiteService.editWebsite - Success, website ID:', websiteId);
     return {
       ...savedWebsite,
@@ -966,7 +945,6 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       cssCode: savedWebsite.cssCode,
       jsCode: savedWebsite.jsCode,
       message: 'Website updated successfully',
-      ...(previewUrl && { previewUrl }),
     };
   }
 
@@ -2194,252 +2172,6 @@ DESIGN (MANDATORY - PRODUCTION-READY):
     return result;
   }
 
-  private async saveViteProject(
-    userId: string,
-    websiteId: string,
-    components: Array<{
-      name: string;
-      type: string;
-      path: string;
-      code: string;
-      language: string;
-    }>,
-    viteConfig: any,
-    websiteName: string,
-  ): Promise<string> {
-    const baseDir = path.join(process.cwd(), 'generated_sites', userId, websiteId);
-    
-    // Create directory structure
-    if (!fs.existsSync(baseDir)) {
-      fs.mkdirSync(baseDir, { recursive: true });
-    }
-
-    const srcDir = path.join(baseDir, 'src');
-    const componentsDir = path.join(srcDir, 'components');
-    const utilsDir = path.join(srcDir, 'utils');
-
-    // Create subdirectories
-    [srcDir, componentsDir, utilsDir].forEach(dir => {
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-    });
-
-            // Save index.html
-            const indexHtml = viteConfig?.indexHtml || this.generateDefaultIndexHtml(websiteName);
-            // Normalize script src to /src/main.jsx (fix AI typos like main.jsxx or main.js)
-            const updatedIndexHtml = indexHtml.replace(
-              /src=["']([^"']*\/main)\.(js|jsx|jsxx|tsx)["']/gi,
-              'src="/src/main.jsx"',
-            );
-            fs.writeFileSync(path.join(baseDir, 'index.html'), updatedIndexHtml);
-
-    // Save package.json
-    const packageJson = viteConfig?.packageJson || this.generateDefaultPackageJson(websiteName);
-    fs.writeFileSync(path.join(baseDir, 'package.json'), packageJson);
-
-    // Save vite.config.js
-    const viteConfigJs = viteConfig?.viteConfig || this.generateDefaultViteConfig();
-    fs.writeFileSync(path.join(baseDir, 'vite.config.js'), viteConfigJs);
-
-            // Save src/main.jsx
-            const mainJsx = viteConfig?.mainJs || viteConfig?.mainJsx || this.generateDefaultMainJs(components);
-            fs.writeFileSync(path.join(srcDir, 'main.jsx'), mainJsx);
-
-            // Save src/style.css
-            const styleCss = viteConfig?.styleCss || this.generateDefaultStyleCss();
-            fs.writeFileSync(path.join(srcDir, 'style.css'), styleCss);
-
-
-            // Save components
-            components.forEach(component => {
-              let componentPath = component.path.startsWith('src/')
-                ? path.join(baseDir, component.path)
-                : path.join(baseDir, 'src', component.path);
-              
-              // Ensure .jsx extension for React components
-              if (!componentPath.endsWith('.jsx') && component.language === 'jsx') {
-                componentPath = componentPath.replace(/\.js$/, '.jsx');
-              }
-
-              // Ensure directory exists
-              const componentDir = path.dirname(componentPath);
-              if (!fs.existsSync(componentDir)) {
-                fs.mkdirSync(componentDir, { recursive: true });
-              }
-
-              fs.writeFileSync(componentPath, component.code);
-            });
-
-    // Create .gitignore
-    const gitignore = `node_modules
-dist
-.DS_Store
-*.log
-.env
-.env.local
-`;
-    fs.writeFileSync(path.join(baseDir, '.gitignore'), gitignore);
-
-    return baseDir;
-  }
-
-  private generateDefaultIndexHtml(websiteName: string): string {
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="${websiteName} - Generated Website">
-    <title>${websiteName}</title>
-</head>
-<body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
-</body>
-</html>`;
-  }
-
-  private generateDefaultPackageJson(websiteName: string): string {
-    return JSON.stringify({
-      name: websiteName.toLowerCase().replace(/\s+/g, '-'),
-      version: '1.0.0',
-      type: 'module',
-      scripts: {
-        dev: 'vite',
-        build: 'vite build',
-        preview: 'vite preview'
-      },
-      dependencies: {
-        react: '^18.2.0',
-        'react-dom': '^18.2.0'
-      },
-      devDependencies: {
-        vite: '^5.0.0',
-        '@vitejs/plugin-react': '^4.2.0'
-      }
-    }, null, 2);
-  }
-
-  private generateDefaultViteConfig(): string {
-    return this.generateViteConfigWithBase('/');
-  }
-
-  /**
-   * Vite config with a base path (for preview serving at /website/preview/:userId/:websiteId/)
-   */
-  private generateViteConfigWithBase(basePath: string): string {
-    const base = basePath.endsWith('/') ? basePath : basePath + '/';
-    return `import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
-
-export default defineConfig({
-  base: '${base.replace(/'/g, "\\'")}',
-  plugins: [react()],
-  server: {
-    port: 3000,
-    open: true
-  },
-  build: {
-    outDir: 'dist',
-    assetsDir: 'assets'
-  }
-});`;
-  }
-
-  private generateDefaultMainJs(components: any[]): string {
-    const componentImports = components
-      .filter(c => c.type === 'component' && (c.language === 'js' || c.language === 'jsx'))
-      .map(c => {
-        const importPath = c.path.startsWith('src/') 
-          ? `/${c.path.replace(/\.(js|jsx)$/, '')}`
-          : `/src/${c.path.replace(/\.(js|jsx)$/, '')}`;
-        const componentName = c.name.replace(/\s+/g, '');
-        return `import ${componentName} from '${importPath}';`;
-      })
-      .join('\n');
-
-    const componentRenders = components
-      .filter(c => c.type === 'component' && (c.language === 'js' || c.language === 'jsx'))
-      .map(c => {
-        const componentName = c.name.replace(/\s+/g, '');
-        return `    <${componentName} />`;
-      })
-      .join('\n');
-
-    return `import React from 'react';
-import ReactDOM from 'react-dom/client';
-import './style.css';
-
-${componentImports}
-
-function App() {
-  return (
-    <>
-${componentRenders}
-    </>
-  );
-}
-
-const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(<App />);`;
-  }
-
-  private generateDefaultStyleCss(): string {
-    return `@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-
-:root {
-  --primary-color: #1e3a8a;
-  --secondary-color: #64748b;
-  --accent-color: #fbbf24;
-  --bg-color: #f1f5f9;
-  --text-color: #1f2937;
-}
-
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
-body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  color: var(--text-color);
-  background: var(--bg-color);
-  line-height: 1.6;
-}
-
-#app {
-  min-height: 100vh;
-}`;
-  }
-
-  private async saveWebsiteFiles(
-    userId: string,
-    websiteId: string,
-    html: string,
-    css: string,
-    js: string,
-  ): Promise<string> {
-    const baseDir = path.join(process.cwd(), 'generated_sites', userId, websiteId);
-    
-    // Create directory if it doesn't exist
-    if (!fs.existsSync(baseDir)) {
-      fs.mkdirSync(baseDir, { recursive: true });
-    }
-
-    // Save HTML file
-    fs.writeFileSync(path.join(baseDir, 'index.html'), html);
-
-    // Save CSS file
-    fs.writeFileSync(path.join(baseDir, 'styles.css'), css);
-
-    // Save JS file
-    fs.writeFileSync(path.join(baseDir, 'app.js'), js);
-
-    return baseDir;
-  }
-
   async getUserWebsites(userId: string) {
     const websites = await this.websiteRepository.find({
       where: { userId },
@@ -2467,107 +2199,6 @@ body {
       ...website,
       id: website.id.toString(),
     };
-  }
-
-  /** Build timeout in ms (install + build) */
-  private static readonly PREVIEW_BUILD_TIMEOUT_MS = 180000;
-
-  /**
-   * Runs npm install and npm run build in baseDir. Writes vite.config with basePath before building.
-   */
-  private async buildProjectForPreview(
-    baseDir: string,
-    basePath: string,
-  ): Promise<{ success: true } | { success: false; log: string }> {
-    const distPath = path.join(baseDir, 'dist');
-    const viteConfigPath = path.join(baseDir, 'vite.config.js');
-    const viteConfigWithBase = this.generateViteConfigWithBase(basePath);
-    fs.writeFileSync(viteConfigPath, viteConfigWithBase);
-
-    const opts = {
-      cwd: baseDir,
-      timeout: WebsiteService.PREVIEW_BUILD_TIMEOUT_MS,
-      maxBuffer: 10 * 1024 * 1024,
-    };
-
-    try {
-      await execAsync('npm install', opts);
-    } catch (err: any) {
-      const log = [err.stdout, err.stderr].filter(Boolean).join('\n') || err.message;
-      return { success: false, log: `npm install failed: ${log}` };
-    }
-
-    try {
-      await execAsync('npm run build', opts);
-    } catch (err: any) {
-      const log = [err.stdout, err.stderr].filter(Boolean).join('\n') || err.message;
-      return { success: false, log: `npm run build failed: ${log}` };
-    }
-
-    if (!fs.existsSync(distPath) || !fs.existsSync(path.join(distPath, 'index.html'))) {
-      return { success: false, log: 'Build completed but dist/index.html not found.' };
-    }
-
-    return { success: true };
-  }
-
-  /**
-   * Ensures the Vite project is on disk, builds it for preview, returns the URL to serve it.
-   * Only for component-based (Vite) websites.
-   */
-  async getPreviewUrl(websiteId: string, userId: string): Promise<
-    { success: true; previewUrl: string } | { success: false; error: string; log?: string }
-  > {
-    const website = await this.websiteRepository.findOne({
-      where: { _id: new ObjectId(websiteId) } as any,
-    });
-
-    if (!website || website.userId !== userId) {
-      return { success: false, error: 'Website not found or access denied' };
-    }
-
-    const components = website.components || [];
-    const viteConfig = website.viteConfig;
-    const hasViteEntry = !!(viteConfig?.mainJsx || viteConfig?.mainJs);
-
-    if (!viteConfig || (components.length === 0 && !hasViteEntry)) {
-      return {
-        success: false,
-        error: 'Real-build preview needs viteConfig with mainJsx/mainJs and/or component files.',
-      };
-    }
-
-    const baseDir = path.join(process.cwd(), 'generated_sites', userId, websiteId);
-
-    if (!fs.existsSync(baseDir)) {
-      await this.saveViteProject(
-        userId,
-        websiteId,
-        components,
-        viteConfig,
-        website.websiteName,
-      );
-    } else {
-      // Ensure files are up to date (e.g. user may have edited and we only have in DB)
-      await this.saveViteProject(
-        userId,
-        websiteId,
-        components,
-        viteConfig,
-        website.websiteName,
-      );
-    }
-
-    const basePath = `/website/preview/${userId}/${websiteId}`;
-    const buildResult = await this.buildProjectForPreview(baseDir, basePath);
-
-    if (buildResult.success === false) {
-      return { success: false, error: 'Preview build failed', log: buildResult.log };
-    }
-
-    const apiBase = process.env.API_URL || process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 3000}`;
-    const previewUrl = `${apiBase.replace(/\/$/, '')}${basePath}/`;
-    return { success: true, previewUrl };
   }
 
   async deleteWebsite(websiteId: string, userId: string) {
