@@ -18,6 +18,12 @@ import JSZip from 'jszip';
 
 const STREAM_API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
+/**
+ * Only used for legacy POST /website/:id/edit (no v0ChatId). Prefer edit-stream for thread edits — no axios wall-clock limit.
+ */
+const EDIT_SYNC_FALLBACK_TIMEOUT_MS =
+  Number(import.meta.env.VITE_WEBSITE_EDIT_TIMEOUT_MS) || 900_000;
+
 function drainSseBlocks(buffer: string): { rest: string; events: { event?: string; data: string }[] } {
   const events: { event?: string; data: string }[] = [];
   const parts = buffer.split('\n\n');
@@ -65,6 +71,8 @@ interface GeneratedWebsite {
   v0ChatId?: string;
   /** Hosted preview iframe URL from v0 (`demo` / `latestVersion.demoUrl`). */
   v0DemoUrl?: string;
+  /** Last sync edit: v0-clone thread continuation vs legacy full-site create. */
+  editV0Path?: 'sendMessage' | 'create_fallback';
   createdAt: string;
 }
 
@@ -394,17 +402,92 @@ const Dashboard = () => {
   const handleEdit = async () => {
     if (!generatedWebsite?.id || !addOnPrompt.trim()) return;
     setEditLoading(true);
-    try {
-      const res = await api.post<GeneratedWebsite & { message?: string }>(
-        `/website/${generatedWebsite.id}/edit`,
-        { editPrompt: addOnPrompt.trim() },
-        { timeout: 300000 }
-      );
-      const nextId = res.data.id || generatedWebsite.id;
-      setGeneratedWebsite({ ...res.data, id: nextId });
+    const token = localStorage.getItem('token');
+    if (!token) {
+      alert('You are not authenticated. Please login again.');
+      window.location.href = '/login';
+      setEditLoading(false);
+      return;
+    }
+
+    const websiteId = generatedWebsite.id;
+    const editPrompt = addOnPrompt.trim();
+    const applySaved = (saved: GeneratedWebsite) => {
+      const nextId = saved.id || websiteId;
+      setGeneratedWebsite({ ...saved, id: nextId });
       setAddOnPrompt('');
+    };
+
+    try {
+      const streamRes = await fetch(`${STREAM_API_BASE}/website/${websiteId}/edit-stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ editPrompt }),
+      });
+
+      // No v0 thread: backend only supports sync full-site edit
+      if (streamRes.status === 422) {
+        const res = await api.post<GeneratedWebsite & { message?: string }>(
+          `/website/${websiteId}/edit`,
+          { editPrompt },
+          { timeout: EDIT_SYNC_FALLBACK_TIMEOUT_MS }
+        );
+        applySaved({ ...res.data, id: res.data.id || websiteId });
+        return;
+      }
+
+      if (!streamRes.ok) {
+        const errBody = await streamRes.json().catch(() => ({} as { message?: string }));
+        throw new Error(errBody.message || `Edit failed (${streamRes.status})`);
+      }
+
+      const reader = streamRes.body?.getReader();
+      if (!reader) throw new Error('No response body from edit-stream');
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let saved: GeneratedWebsite | null = null;
+      let streamError: string | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (value) buffer += decoder.decode(value, { stream: true });
+        const { rest, events } = drainSseBlocks(buffer);
+        buffer = rest;
+        for (const e of events) {
+          if (e.event === 'website-saved') {
+            try {
+              saved = JSON.parse(e.data) as GeneratedWebsite;
+            } catch {
+              streamError = 'Invalid website-saved payload';
+            }
+          } else if (e.event === 'website-error') {
+            try {
+              const j = JSON.parse(e.data) as { message?: string };
+              streamError = j.message || 'website-error';
+            } catch {
+              streamError = 'website-error';
+            }
+          }
+        }
+        if (done) break;
+      }
+
+      if (streamError) throw new Error(streamError);
+      if (!saved) {
+        throw new Error('Edit stream ended without saving. Try again or use a smaller change.');
+      }
+      applySaved(saved);
     } catch (error: any) {
-      const msg = error.response?.data?.message || error.message || 'Failed to apply changes';
+      const isTimeout =
+        error.code === 'ECONNABORTED' || /timeout of \d+ms exceeded/i.test(String(error.message || ''));
+      const base = error.response?.data?.message || error.message || 'Failed to apply changes';
+      const msg = isTimeout
+        ? `${base}\n\nTip: regenerate once so edits use streaming, or raise VITE_WEBSITE_EDIT_TIMEOUT_MS / HTTP_SERVER_TIMEOUT_MS for legacy (no v0 chat id) edits.`
+        : base;
       alert(msg);
     } finally {
       setEditLoading(false);
@@ -588,6 +671,13 @@ const Dashboard = () => {
                 )}
 
                 {/* Same input as dashboard: Attach, Templates, Generate */}
+                {!generatedWebsite.v0ChatId?.trim() && (
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    This project has no v0 chat id yet (e.g. older saves). The next edit sends the full site to the model;
+                    after a successful edit, thread-style edits apply automatically if a chat id is stored.
+                  </p>
+                )}
+
                 <div
                   className={cn(
                     'relative rounded-2xl border bg-card p-1 transition-all duration-300',

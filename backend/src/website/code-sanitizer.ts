@@ -5,10 +5,60 @@
 
 export class CodeSanitizer {
   /**
+   * Next.js `metadata` / `export const metadata` is invalid when multiple files are concatenated for preview.
+   * Strip blocks and next/metadata imports from stored v0 output.
+   */
+  static stripNextJsMetadataBlocks(code: string): string {
+    if (!code || typeof code !== 'string') return code;
+    let s = code;
+    const headerPatterns = [
+      /export\s+const\s+metadata\s*(?::\s*[^\n=]+)?=\s*\{/,
+      /const\s+metadata\s*:\s*Metadata\s*=\s*\{/,
+      /const\s+metadata\s*=\s*\{/,
+    ];
+    let removed = true;
+    while (removed) {
+      removed = false;
+      for (const re of headerPatterns) {
+        const m = re.exec(s);
+        if (!m || m.index === undefined) continue;
+        const start = m.index;
+        const braceIdx = s.indexOf('{', start);
+        if (braceIdx === -1) continue;
+        let depth = 0;
+        let i = braceIdx;
+        for (; i < s.length; i++) {
+          const ch = s[i];
+          if (ch === '{') depth++;
+          else if (ch === '}') {
+            depth--;
+            if (depth === 0) {
+              i++;
+              break;
+            }
+          }
+        }
+        if (depth !== 0) continue;
+        let end = i;
+        while (end < s.length && /\s/.test(s[end])) end++;
+        if (s[end] === ';') end++;
+        s = s.slice(0, start) + '\n' + s.slice(end);
+        removed = true;
+        break;
+      }
+    }
+    s = s.replace(/import\s+type\s+\{[^}]*\}\s+from\s+['"]next['"]\s*;?\s*/g, '');
+    s = s.replace(/import\s+\{\s*Metadata\s*\}\s+from\s+['"]next['"]\s*;?\s*/g, '');
+    s = s.replace(/import\s+type\s+Metadata\s+from\s+['"]next['"]\s*;?\s*/g, '');
+    return s;
+  }
+
+  /**
    * Master sanitization - run on ALL code before preview/save
    */
   static sanitizeAll(code: string): string {
     let sanitized = code;
+    sanitized = this.stripNextJsMetadataBlocks(sanitized);
     sanitized = this.fixTemplateLiteralsInJSX(sanitized);
     sanitized = this.fixDollarSignsInJSX(sanitized);
     sanitized = this.fixInvalidAssignments(sanitized);
@@ -27,6 +77,7 @@ export class CodeSanitizer {
    */
   static sanitizeSyntaxOnly(code: string): string {
     let sanitized = code;
+    sanitized = this.stripNextJsMetadataBlocks(sanitized);
     sanitized = this.fixTemplateLiteralsInJSX(sanitized);
     sanitized = this.fixDollarSignsInJSX(sanitized);
     sanitized = this.fixInvalidAssignments(sanitized);

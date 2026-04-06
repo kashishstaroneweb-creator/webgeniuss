@@ -4,12 +4,14 @@ import { Repository } from 'typeorm';
 import { Website } from '../entities/website.entity';
 import { PromptHistory } from '../entities/prompt-history.entity';
 import { ObjectId } from 'mongodb';
-import { createClient, type ChatDetail, type ChatsCreateRequest } from 'v0-sdk';
+import { createClient, type ChatDetail, type ChatsCreateRequest, type ChatsSendMessageRequest } from 'v0-sdk';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Transform } from 'stream';
 import type { Response } from 'express';
 import axios, { type AxiosResponse } from 'axios';
+import { CodeSanitizer } from './code-sanitizer';
 
 @Injectable()
 export class WebsiteService {
@@ -320,7 +322,9 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     const getPlaceholderUrl = await this.buildPlaceholderUrlGetter(websiteName || '', prompt);
     const sanitizeCode = (raw: string) =>
       this.sanitizeInvalidConditionAssignment(
-        this.sanitizeJsxDollarInterpolation(this.transformJsxAttributeTemplateLiterals(raw)),
+        this.sanitizeJsxDollarInterpolation(
+          this.transformJsxAttributeTemplateLiterals(CodeSanitizer.stripNextJsMetadataBlocks(raw)),
+        ),
       );
     if (websiteCode?.components?.length) {
       for (let i = 0; i < websiteCode.components.length; i++) {
@@ -612,6 +616,17 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       chat = { ...chat, id: r.chat.id } as ChatDetail;
     }
     chat = await this.waitForV0ChatReady(chat, true);
+    const resolvedChatId = (chat.id || chatId || '').trim();
+    if (!resolvedChatId) {
+      const err = new Error(
+        'v0 returned a chat without an id after generation; edits cannot continue the thread. Try generating again.',
+      ) as Error & { status?: number };
+      err.status = 502;
+      throw err;
+    }
+    if (!chat.id) {
+      chat = { ...chat, id: resolvedChatId } as ChatDetail;
+    }
     const refusalText = (chat.text || this.getLastAssistantContent(chat) || '').trim();
     if (this.isRefusalResponse(refusalText)) {
       const err = new Error(
@@ -626,8 +641,8 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     }
     const responseContent = this.serializeChatForHistory(chat);
     let v0DemoUrl = this.extractV0DemoFromChatDetail(chat);
-    if (chat.id && !v0DemoUrl) {
-      v0DemoUrl = await this.fetchV0DemoUrlByChatId(chat.id);
+    if (!v0DemoUrl) {
+      v0DemoUrl = await this.fetchV0DemoUrlByChatId(resolvedChatId);
     }
     return this.persistWebsiteAfterV0Generation({
       userId,
@@ -635,7 +650,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       prompt,
       responseContent,
       websiteCode,
-      v0ChatId: chat.id,
+      v0ChatId: resolvedChatId,
       v0DemoUrl,
     });
   }
@@ -795,65 +810,253 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
   }
 
   /**
-   * Edit an existing website with an add-on prompt (same chat flow).
-   * Loads current site, sends to v0 with edit instruction, parses and sanitizes, updates DB and files.
+   * v0 experimental_stream on an existing chat: POST /chats/:id/messages, proxy SSE, then GET chat and persist edit (same as v0-clone).
    */
-  private static readonly DEFAULT_TEST_USER_ID = '691df5ddac69fc46beca44b3';
-
-  async editWebsite(websiteId: string, userId: string, editPrompt: string) {
-    console.log('WebsiteService.editWebsite - Starting:', { websiteId, userId, editPromptLength: editPrompt.length });
+  async pipeV0EditStream(
+    res: Response,
+    userId: string,
+    websiteId: string,
+    editPrompt: string,
+  ): Promise<void> {
     const website = await this.websiteRepository.findOne({
       where: { _id: new ObjectId(websiteId) } as any,
     });
     if (!website) {
-      const err = new Error('Website not found or access denied') as Error & { status?: number };
-      err.status = 404;
-      throw err;
+      if (!res.headersSent) res.status(404).json({ message: 'Website not found or access denied' });
+      return;
     }
     const isOwner = website.userId === userId;
     const isDefaultTestUserSite = website.userId === WebsiteService.DEFAULT_TEST_USER_ID;
     if (!isOwner && !isDefaultTestUserSite) {
-      const err = new Error('Website not found or access denied') as Error & { status?: number };
-      err.status = 404;
-      throw err;
+      if (!res.headersSent) res.status(404).json({ message: 'Website not found or access denied' });
+      return;
     }
     if (isDefaultTestUserSite && userId !== WebsiteService.DEFAULT_TEST_USER_ID) {
       website.userId = userId;
       await this.websiteRepository.save(website);
     }
 
-    const isComponentBased =
-      (website.components?.length ?? 0) > 0 ||
-      !!(website.viteConfig?.mainJsx || website.viteConfig?.mainJs);
+    const chatId = website.v0ChatId?.trim();
+    if (!chatId) {
+      if (!res.headersSent) {
+        res.status(422).json({
+          message:
+            'This website has no v0 chat id (e.g. created before streaming). Use POST /website/:id/edit or regenerate once.',
+        });
+      }
+      return;
+    }
 
-    const editSystemPrompt = isComponentBased
-      ? `You are an expert editor for React/Vite websites. You will receive the CURRENT website as a JSON object with "components" (array of { name, type, path, code, language }) and "viteConfig" (object with packageJson, viteConfig, indexHtml, mainJsx, styleCss). The user will give you ONE edit instruction. Your job is to return the COMPLETE updated website in the EXACT SAME JSON structure. Rules:
-- Return ONLY valid JSON. No markdown, no explanation, no code blocks. Pure JSON starting with { and ending with }.
-- Change ONLY what the user asked. Keep all other components and config identical.
-- Preserve component names, paths, and file structure unless the user explicitly asks to add/rename/remove.
-- If adding new components, add them to the components array and update mainJsx to import and render them.
-- Keep the same code style and patterns. Do not strip or simplify existing code.
-- Output the full JSON: { "components": [...], "viteConfig": { ... } }.`
-      : `You are an expert editor for HTML/CSS/JS websites. You will receive the CURRENT website as HTML, CSS, and JS. The user will give you ONE edit instruction. Return a JSON object with "html", "css", "js" containing the FULL updated code. Rules:
-- Return ONLY valid JSON: { "html": "...", "css": "...", "js": "..." }. No markdown, no explanation.
-- Change ONLY what the user asked. Keep everything else identical.
-- Escape strings for JSON (newlines as \\n, quotes escaped).`;
+    let streamEditBaseline:
+      | {
+          contentSig: string;
+          versionId?: string;
+          chatUpdatedAt?: string;
+          latestVersionUpdatedAt?: string;
+          assistantTail?: { id?: string; updatedAt?: string };
+        }
+      | undefined;
+    try {
+      const preStream = await this.getV0ChatByIdRest(chatId);
+      const asst0 = this.getLastAssistantTail(preStream);
+      streamEditBaseline = {
+        contentSig: this.v0FilesContentSignature(preStream),
+        versionId: preStream.latestVersion?.id,
+        chatUpdatedAt: preStream.updatedAt,
+        latestVersionUpdatedAt: preStream.latestVersion?.updatedAt,
+        assistantTail: asst0.id ? asst0 : undefined,
+      };
+    } catch (e: unknown) {
+      console.warn(
+        'WebsiteService.pipeV0EditStream - pre-stream baseline GET failed:',
+        this.formatV0NetworkError(e),
+      );
+      streamEditBaseline = undefined;
+    }
 
-    const userMessage = isComponentBased
-      ? `Current website (JSON):\n${JSON.stringify({ components: website.components || [], viteConfig: website.viteConfig || {} })}\n\nUser edit request: ${editPrompt}`
-      : `Current HTML:\n${website.htmlCode || ''}\n\nCurrent CSS:\n${website.cssCode || ''}\n\nCurrent JS:\n${website.jsCode || ''}\n\nUser edit request: ${editPrompt}`;
+    const modelConfiguration = this.getV0ModelConfiguration();
+    const body: Record<string, unknown> = {
+      message: (editPrompt || '').trim(),
+      responseMode: 'experimental_stream',
+    };
+    if (modelConfiguration) body.modelConfiguration = modelConfiguration;
 
-    let { websiteCode: websiteCodeRaw, v0ChatId: newV0ChatId, v0DemoUrl: newV0DemoUrl } =
-      await this.fetchWebsiteCodeFromV0(editSystemPrompt, userMessage);
-    if (newV0ChatId && !newV0DemoUrl) {
-      newV0DemoUrl = await this.fetchV0DemoUrlByChatId(newV0ChatId);
+    const timeout = Number(process.env.V0_STREAM_TIMEOUT_MS) || 600_000;
+    let axiosRes: AxiosResponse<NodeJS.ReadableStream>;
+    try {
+      axiosRes = await axios.post<NodeJS.ReadableStream>(
+        `${this.getV0BaseUrl()}/chats/${encodeURIComponent(chatId)}/messages`,
+        body,
+        {
+          responseType: 'stream',
+          timeout,
+          headers: {
+            Authorization: `Bearer ${this.getV0ApiKeyOrThrow()}`,
+            'Content-Type': 'application/json',
+            Accept: 'text/event-stream',
+            'Cache-Control': 'no-cache',
+          },
+          validateStatus: () => true,
+        },
+      );
+    } catch (e: unknown) {
+      if (!res.headersSent) {
+        res.status(502).json({ message: this.formatV0NetworkError(e) });
+      }
+      return;
+    }
+
+    if (axiosRes.status >= 400) {
+      const chunks: Buffer[] = [];
+      await new Promise<void>((resolve, reject) => {
+        const s = axiosRes.data as NodeJS.ReadableStream;
+        s.on('data', (c: Buffer) => chunks.push(c));
+        s.on('end', () => resolve());
+        s.on('error', reject);
+      });
+      const text = Buffer.concat(chunks).toString('utf8').slice(0, 8000);
+      if (!res.headersSent) {
+        res.status(axiosRes.status).json({ message: text || `v0 returned HTTP ${axiosRes.status}` });
+      }
+      return;
+    }
+
+    res.status(200);
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    (res as Response & { flushHeaders?: () => void }).flushHeaders?.();
+
+    /** Known thread id from DB; sendMessage does not create a new chat. */
+    const effectiveChatId = chatId;
+
+    const upstream = axiosRes.data as NodeJS.ReadableStream;
+    upstream.pipe(res, { end: false });
+
+    const writeSseAndEnd = (event: string, payload: unknown) => {
+      if (res.writableEnded) return;
+      try {
+        res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+      } catch {
+        /* ignore */
+      }
+    };
+
+    const finishWithSse = async () => {
+      if (res.writableEnded) return;
+      try {
+        const fresh = await this.websiteRepository.findOne({
+          where: { _id: new ObjectId(websiteId) } as any,
+        });
+        if (!fresh) {
+          writeSseAndEnd('website-error', { message: 'Website not found after stream' });
+          res.end();
+          return;
+        }
+        const own = fresh.userId === userId || fresh.userId === WebsiteService.DEFAULT_TEST_USER_ID;
+        if (!own) {
+          writeSseAndEnd('website-error', { message: 'Access denied' });
+          res.end();
+          return;
+        }
+
+        let chat = await this.getV0ChatByIdRest(effectiveChatId);
+        const r = chat as ChatDetail & { chat?: { id?: string } };
+        if (!chat.id && r.chat?.id) {
+          chat = { ...chat, id: r.chat.id } as ChatDetail;
+        }
+        let priorSig = streamEditBaseline?.contentSig;
+        let priorVid = streamEditBaseline?.versionId;
+        let priorChatUpd = streamEditBaseline?.chatUpdatedAt;
+        let priorLatestVerUpd = streamEditBaseline?.latestVersionUpdatedAt;
+        let priorAsstTail = streamEditBaseline?.assistantTail;
+        if (priorSig === undefined) {
+          priorSig = this.v0FilesContentSignature(chat);
+          priorVid = chat.latestVersion?.id;
+          priorChatUpd = chat.updatedAt;
+          priorLatestVerUpd = chat.latestVersion?.updatedAt;
+          const t0 = this.getLastAssistantTail(chat);
+          priorAsstTail = t0.id ? t0 : undefined;
+        }
+        chat = await this.waitForV0ChatReady(chat, true, {
+          followUpMessage: true,
+          priorFilesContentSig: priorSig,
+          priorVersionId: priorVid,
+          priorChatUpdatedAt: priorChatUpd,
+          priorLatestVersionUpdatedAt: priorLatestVerUpd,
+          priorAssistantTail: priorAsstTail?.id != null ? priorAsstTail : undefined,
+        });
+        const refusalText = (chat.text || this.getLastAssistantContent(chat) || '').trim();
+        if (this.isRefusalResponse(refusalText)) {
+          writeSseAndEnd('website-error', {
+            message: 'The AI declined to apply this edit. Try rephrasing your request.',
+          });
+          res.end();
+          return;
+        }
+        let websiteCode = this.websiteCodeFromChatDetail(chat);
+        if (websiteCode?.files && Array.isArray(websiteCode.files)) {
+          websiteCode = this.convertV0FilesToStructure(websiteCode);
+        }
+        let v0DemoUrl = this.extractV0DemoFromChatDetail(chat);
+        if (chat.id && !v0DemoUrl) {
+          v0DemoUrl = await this.fetchV0DemoUrlByChatId(chat.id);
+        }
+        const resolvedChatId = chat.id || effectiveChatId;
+
+        const saved = await this.saveWebsiteEditFromFetchedCode(
+          fresh,
+          websiteId,
+          websiteCode,
+          editPrompt.trim(),
+          resolvedChatId,
+          v0DemoUrl,
+        );
+        writeSseAndEnd('website-saved', { ...saved, editV0Path: 'sendMessage' as const });
+        res.end();
+      } catch (e: unknown) {
+        const msg = (e as Error)?.message || String(e);
+        writeSseAndEnd('website-error', { message: msg });
+        res.end();
+      }
+    };
+
+    upstream.on('end', () => {
+      void finishWithSse();
+    });
+    upstream.on('error', (err: Error) => {
+      console.error('WebsiteService.pipeV0EditStream - upstream error:', err);
+      writeSseAndEnd('website-error', { message: err.message });
+      if (!res.writableEnded) res.end();
+    });
+  }
+
+  private static readonly DEFAULT_TEST_USER_ID = '691df5ddac69fc46beca44b3';
+
+  /**
+   * Sanitize v0 edit output and persist on the given website row (used by sync edit and edit-stream finalize).
+   */
+  private async saveWebsiteEditFromFetchedCode(
+    website: Website,
+    websiteId: string,
+    websiteCodeRaw: any,
+    editPrompt: string,
+    newV0ChatId: string,
+    newV0DemoUrl?: string,
+  ) {
+    let v0DemoUrl = newV0DemoUrl;
+    if (newV0ChatId && !v0DemoUrl) {
+      v0DemoUrl = await this.fetchV0DemoUrlByChatId(newV0ChatId);
     }
     let websiteCode = websiteCodeRaw;
 
     const getPlaceholderUrl = await this.buildPlaceholderUrlGetter(website.websiteName || '', website.prompt || editPrompt);
     const sanitizeCode = (raw: string) =>
       this.sanitizeInvalidConditionAssignment(
-        this.sanitizeJsxDollarInterpolation(this.transformJsxAttributeTemplateLiterals(raw)),
+        this.sanitizeJsxDollarInterpolation(
+          this.transformJsxAttributeTemplateLiterals(CodeSanitizer.stripNextJsMetadataBlocks(raw)),
+        ),
       );
 
     if (websiteCode?.components?.length) {
@@ -932,10 +1135,10 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     }
     website.prompt = (website.prompt || '') + '\n[Edit] ' + editPrompt;
     website.v0ChatId = newV0ChatId;
-    website.v0DemoUrl = newV0DemoUrl || undefined;
+    website.v0DemoUrl = v0DemoUrl || undefined;
     const savedWebsite = await this.websiteRepository.save(website);
 
-    console.log('WebsiteService.editWebsite - Success, website ID:', websiteId);
+    console.log('WebsiteService.saveWebsiteEditFromFetchedCode - Success, website ID:', websiteId);
     return {
       ...savedWebsite,
       id: savedWebsite.id.toString(),
@@ -946,6 +1149,83 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       jsCode: savedWebsite.jsCode,
       message: 'Website updated successfully',
     };
+  }
+
+  /**
+   * Edit: prefer `chats.sendMessage` + stored `v0ChatId` (v0-clone). Fallback: `chats.create` with inlined site JSON when no chat id.
+   */
+  async editWebsite(websiteId: string, userId: string, editPrompt: string) {
+    console.log('WebsiteService.editWebsite - Starting:', { websiteId, userId, editPromptLength: editPrompt.length });
+    const website = await this.websiteRepository.findOne({
+      where: { _id: new ObjectId(websiteId) } as any,
+    });
+    if (!website) {
+      const err = new Error('Website not found or access denied') as Error & { status?: number };
+      err.status = 404;
+      throw err;
+    }
+    const isOwner = website.userId === userId;
+    const isDefaultTestUserSite = website.userId === WebsiteService.DEFAULT_TEST_USER_ID;
+    if (!isOwner && !isDefaultTestUserSite) {
+      const err = new Error('Website not found or access denied') as Error & { status?: number };
+      err.status = 404;
+      throw err;
+    }
+    if (isDefaultTestUserSite && userId !== WebsiteService.DEFAULT_TEST_USER_ID) {
+      website.userId = userId;
+      await this.websiteRepository.save(website);
+    }
+
+    const v0ChatIdTrimmed = website.v0ChatId?.trim();
+    const editV0Path = v0ChatIdTrimmed ? ('sendMessage' as const) : ('create_fallback' as const);
+    let websiteCodeRaw: any;
+    let newV0ChatId: string;
+    let newV0DemoUrl: string | undefined;
+
+    if (v0ChatIdTrimmed) {
+      console.log('WebsiteService.editWebsite - Continuing v0 chat via sendMessage:', v0ChatIdTrimmed);
+      const r = await this.fetchWebsiteCodeFromV0SendMessage(v0ChatIdTrimmed, editPrompt.trim());
+      websiteCodeRaw = r.websiteCode;
+      newV0ChatId = r.v0ChatId;
+      newV0DemoUrl = r.v0DemoUrl;
+    } else {
+      console.log('WebsiteService.editWebsite - No v0ChatId; fallback chats.create + inlined site payload');
+      const isComponentBased =
+        (website.components?.length ?? 0) > 0 ||
+        !!(website.viteConfig?.mainJsx || website.viteConfig?.mainJs);
+
+      const editSystemPrompt = isComponentBased
+        ? `You are an expert editor for React/Vite websites. You will receive the CURRENT website as a JSON object with "components" (array of { name, type, path, code, language }) and "viteConfig" (object with packageJson, viteConfig, indexHtml, mainJsx, styleCss). The user will give you ONE edit instruction. Your job is to return the COMPLETE updated website in the EXACT SAME JSON structure. Rules:
+- Return ONLY valid JSON. No markdown, no explanation, no code blocks. Pure JSON starting with { and ending with }.
+- Change ONLY what the user asked. Keep all other components and config identical.
+- Preserve component names, paths, and file structure unless the user explicitly asks to add/rename/remove.
+- If adding new components, add them to the components array and update mainJsx to import and render them.
+- Keep the same code style and patterns. Do not strip or simplify existing code.
+- Output the full JSON: { "components": [...], "viteConfig": { ... } }.`
+        : `You are an expert editor for HTML/CSS/JS websites. You will receive the CURRENT website as HTML, CSS, and JS. The user will give you ONE edit instruction. Return a JSON object with "html", "css", "js" containing the FULL updated code. Rules:
+- Return ONLY valid JSON: { "html": "...", "css": "...", "js": "..." }. No markdown, no explanation.
+- Change ONLY what the user asked. Keep everything else identical.
+- Escape strings for JSON (newlines as \\n, quotes escaped).`;
+
+      const userMessage = isComponentBased
+        ? `Current website (JSON):\n${JSON.stringify({ components: website.components || [], viteConfig: website.viteConfig || {} })}\n\nUser edit request: ${editPrompt}`
+        : `Current HTML:\n${website.htmlCode || ''}\n\nCurrent CSS:\n${website.cssCode || ''}\n\nCurrent JS:\n${website.jsCode || ''}\n\nUser edit request: ${editPrompt}`;
+
+      const r = await this.fetchWebsiteCodeFromV0(editSystemPrompt, userMessage);
+      websiteCodeRaw = r.websiteCode;
+      newV0ChatId = r.v0ChatId;
+      newV0DemoUrl = r.v0DemoUrl;
+    }
+
+    const saved = await this.saveWebsiteEditFromFetchedCode(
+      website,
+      websiteId,
+      websiteCodeRaw,
+      editPrompt,
+      newV0ChatId,
+      newV0DemoUrl,
+    );
+    return { ...saved, editV0Path };
   }
 
   /**
@@ -1197,12 +1477,18 @@ DESIGN (MANDATORY - PRODUCTION-READY):
         },
       );
       const results = res.data?.results || [];
+      const bases = results
+        .map((r) => r?.urls?.regular || r?.urls?.raw)
+        .filter((b): b is string => !!b);
       const validated: string[] = [];
-      for (const r of results) {
-        const base = r?.urls?.regular || r?.urls?.raw;
-        if (!base) continue;
-        if (await this.isImageUrlOk(base)) {
-          validated.push(base);
+      const batchSize = 12;
+      for (let i = 0; i < bases.length && validated.length < count; i += batchSize) {
+        const batch = bases.slice(i, i + batchSize);
+        const checks = await Promise.all(
+          batch.map(async (base) => ({ base, ok: await this.isImageUrlOk(base) })),
+        );
+        for (const { base, ok } of checks) {
+          if (ok) validated.push(base);
           if (validated.length >= count) break;
         }
       }
@@ -1266,7 +1552,7 @@ DESIGN (MANDATORY - PRODUCTION-READY):
   private async isImageUrlOk(url: string): Promise<boolean> {
     try {
       const res = await axios.head(url, {
-        timeout: 4000,
+        timeout: Number(process.env.IMAGE_HEAD_TIMEOUT_MS) || 2800,
         maxRedirects: 3,
         validateStatus: () => true,
         headers: { 'User-Agent': 'WebGenius/1.0' },
@@ -1285,18 +1571,28 @@ DESIGN (MANDATORY - PRODUCTION-READY):
     getPlaceholderUrl: (width: number, height: number, index?: number) => Promise<string>,
   ): Promise<string> {
     if (!code || typeof code !== 'string') return code;
+    /** Faster saves: skip per-URL HEAD checks (regex/imgur fixes only). Set WEBGENIUS_SKIP_IMAGE_HEAD=1 if v0 slugs are trusted. */
+    if (process.env.WEBGENIUS_SKIP_IMAGE_HEAD === '1') {
+      return this.replaceBrokenImageUrls(code);
+    }
     const imageUrlRegex = /https?:\/\/[^\s"'<>)\]]+\.(?:jpg|jpeg|png|gif|webp)(?:\?[^\s"'<>)\]]*)?|https?:\/\/(?:images\.)?unsplash\.com\/[^\s"'<>)\]]+/gi;
     const allMatches = code.match(imageUrlRegex) || [];
     const unique = [...new Set(allMatches)];
+    const toCheck = unique.slice(0, 25);
+    const concurrency = Math.max(1, Math.min(20, Number(process.env.IMAGE_HEAD_CONCURRENCY) || 10));
     const toReplace = new Set<string>();
-    for (const url of unique.slice(0, 25)) {
-      const ok = await this.isImageUrlOk(url);
-      const short = url.length > 60 ? url.substring(0, 60) + '...' : url;
-      if (ok) {
-        console.log('[IMAGE] URL OK:', short);
-      } else {
-        toReplace.add(url);
-        console.log('[IMAGE] URL BROKEN (will replace):', short);
+    for (let i = 0; i < toCheck.length; i += concurrency) {
+      const batch = toCheck.slice(i, i + concurrency);
+      const outcomes = await Promise.all(
+        batch.map(async (url) => ({ url, ok: await this.isImageUrlOk(url) })),
+      );
+      for (const { url, ok } of outcomes) {
+        const short = url.length > 60 ? url.substring(0, 60) + '...' : url;
+        if (ok) console.log('[IMAGE] URL OK:', short);
+        else {
+          toReplace.add(url);
+          console.log('[IMAGE] URL BROKEN (will replace):', short);
+        }
       }
     }
     if (toReplace.size === 0) return code;
@@ -1513,6 +1809,33 @@ DESIGN (MANDATORY - PRODUCTION-READY):
     return res.data;
   }
 
+  private sendMessageAxiosTimeoutMs(body: ChatsSendMessageRequest): number {
+    if (body.responseMode === 'async') {
+      return Number(process.env.V0_CREATE_ASYNC_TIMEOUT_MS) || 180000;
+    }
+    return Number(process.env.V0_CREATE_TIMEOUT_MS) || 600000;
+  }
+
+  private async sendV0MessageWithAxios(
+    chatId: string,
+    body: ChatsSendMessageRequest,
+    timeoutMs?: number,
+  ): Promise<ChatDetail> {
+    const ms = timeoutMs ?? this.sendMessageAxiosTimeoutMs(body);
+    const res = await axios.post<ChatDetail>(
+      `${this.getV0BaseUrl()}/chats/${encodeURIComponent(chatId)}/messages`,
+      body,
+      {
+        headers: {
+          Authorization: `Bearer ${this.getV0ApiKeyOrThrow()}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: ms,
+      },
+    );
+    return res.data;
+  }
+
   /** Same HTTP stack as create; avoids SDK/getById mismatch. v0 may return 404 until the chat is indexed (race after async create). */
   private async getV0ChatByIdRest(chatId: string): Promise<ChatDetail> {
     const url = `${this.getV0BaseUrl()}/chats/${encodeURIComponent(chatId)}`;
@@ -1622,6 +1945,17 @@ DESIGN (MANDATORY - PRODUCTION-READY):
     return undefined;
   }
 
+  /** Last assistant message identity (for follow-up: detect a new reply even if file hash lags). */
+  private getLastAssistantTail(chat: ChatDetail): { id?: string; updatedAt?: string } {
+    const msgs = chat.messages || [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === 'assistant') {
+        return { id: msgs[i].id, updatedAt: msgs[i].updatedAt };
+      }
+    }
+    return {};
+  }
+
   private serializeChatForHistory(chat: ChatDetail): string {
     try {
       const files = (chat.latestVersion?.files || []).map((f) => ({
@@ -1636,14 +1970,50 @@ DESIGN (MANDATORY - PRODUCTION-READY):
     }
   }
 
+  /** Stable hash of latestVersion file names + contents (order-independent) for detecting real edits after sendMessage. */
+  private v0FilesContentSignature(chat: ChatDetail): string {
+    const files = this.getV0GeneratedFileRecords(chat)
+      .slice()
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const h = crypto.createHash('sha256');
+    for (const f of files) {
+      h.update(f.name);
+      h.update('\0');
+      h.update(f.content || '');
+      h.update('\0');
+    }
+    return h.digest('hex');
+  }
+
   /**
    * After async create, v0 may return before the chat is readable (`chat_not_found`) or before files exist — poll with backoff.
+   * For `chats.sendMessage`, the chat often **already** has files from the previous turn; we must poll until those files change
+   * (or version advances), otherwise we persist stale code while still appending [Edit] to the prompt.
    */
-  private async waitForV0ChatReady(chat: ChatDetail, usedAsyncCreate: boolean): Promise<ChatDetail> {
-    if (!usedAsyncCreate) {
+  private async waitForV0ChatReady(
+    chat: ChatDetail,
+    usedAsyncCreate: boolean,
+    opts?: {
+      followUpMessage?: boolean;
+      priorFilesContentSig?: string;
+      priorVersionId?: string;
+      /** From GET /chats/:id before sendMessage — detect completion when v0 bumps chat.updatedAt but file hash lags. */
+      priorChatUpdatedAt?: string;
+      priorLatestVersionUpdatedAt?: string;
+      priorAssistantTail?: { id?: string; updatedAt?: string };
+    },
+  ): Promise<ChatDetail> {
+    const followUp = opts?.followUpMessage === true;
+    const priorSig = opts?.priorFilesContentSig;
+    const priorVid = opts?.priorVersionId;
+    const priorChatUpdatedAt = opts?.priorChatUpdatedAt;
+    const priorLatestVersionUpdatedAt = opts?.priorLatestVersionUpdatedAt;
+    const priorAssistantTail = opts?.priorAssistantTail;
+
+    if (!usedAsyncCreate && !followUp) {
       return chat;
     }
-    if (this.getV0GeneratedFileRecords(chat).length > 0 || this.websiteCodeFromChatDetail(chat) != null) {
+    if (!followUp && (this.getV0GeneratedFileRecords(chat).length > 0 || this.websiteCodeFromChatDetail(chat) != null)) {
       return chat;
     }
     const raw = chat as ChatDetail & { chatId?: string };
@@ -1651,8 +2021,9 @@ DESIGN (MANDATORY - PRODUCTION-READY):
     if (!chatId) {
       return chat;
     }
-    const baseInterval = Number(process.env.V0_POLL_INTERVAL_MS) || 3000;
-    const initialDelay = Number(process.env.V0_POLL_INITIAL_DELAY_MS) || 12_000;
+    const baseInterval = Number(process.env.V0_POLL_INTERVAL_MS) || 2500;
+    /** Shorter default than 12s: stream/async often has a ready chat sooner; still override with V0_POLL_INITIAL_DELAY_MS. */
+    const initialDelay = Number(process.env.V0_POLL_INITIAL_DELAY_MS) || 4000;
     const maxMs = Number(process.env.V0_POLL_MAX_MS) || 600_000;
     const maxBackoff = Number(process.env.V0_POLL_MAX_BACKOFF_MS) || 45_000;
     /** Stop hammering GET when id never becomes visible (v0 flakiness); outer loop retries with sync create. */
@@ -1662,15 +2033,18 @@ DESIGN (MANDATORY - PRODUCTION-READY):
     let notFoundBackoff = baseInterval;
     let notFoundWallMs = 0;
     console.log(
-      'WebsiteService - async mode: wait',
+      followUp
+        ? 'WebsiteService - follow-up mode: wait for NEW artifact (file hash or version id change)'
+        : 'WebsiteService - async mode: wait',
       initialDelay,
-      'ms then poll GET /chats/:id until files/messages (chatId=',
+      'ms then poll GET /chats/:id (chatId=',
       chatId,
       'maxMs=',
       maxMs,
       ')',
     );
     await new Promise((r) => setTimeout(r, initialDelay));
+    const followUpLoopStart = Date.now();
     while (Date.now() < deadline) {
       try {
         last = await this.getV0ChatByIdRest(chatId);
@@ -1705,6 +2079,57 @@ DESIGN (MANDATORY - PRODUCTION-READY):
         continue;
       }
       const files = this.getV0GeneratedFileRecords(last);
+      const status = last.latestVersion?.status;
+      const sigNow = this.v0FilesContentSignature(last);
+      const vidNow = last.latestVersion?.id;
+
+      if (followUp && priorSig !== undefined) {
+        const filesReady = files.length > 0 || this.websiteCodeFromChatDetail(last) != null;
+        const sigChanged = sigNow !== priorSig;
+        const vidChanged = priorVid != null && vidNow != null && vidNow !== priorVid;
+        const chatMetaChanged =
+          priorChatUpdatedAt != null &&
+          last.updatedAt != null &&
+          last.updatedAt !== priorChatUpdatedAt;
+        const verUpdNow = last.latestVersion?.updatedAt;
+        const verUpdChanged =
+          priorLatestVersionUpdatedAt != null &&
+          verUpdNow != null &&
+          verUpdNow !== priorLatestVersionUpdatedAt;
+        if (status === 'failed') {
+          console.warn('WebsiteService - follow-up poll: latestVersion failed');
+          return last;
+        }
+
+        // New file bytes visible (status may still be pending on the platform)
+        if (filesReady && sigChanged && (status === 'completed' || status === 'pending')) {
+          console.log('WebsiteService - follow-up poll complete (file hash changed)', {
+            fileCount: files.length,
+            status,
+          });
+          return last;
+        }
+
+        // Prefer file hash; also accept version id / chat / latestVersion timestamps (v0 bumps these when publishing)
+        if (
+          status === 'completed' &&
+          filesReady &&
+          (vidChanged || chatMetaChanged || sigChanged || verUpdChanged)
+        ) {
+          console.log('WebsiteService - follow-up poll complete', {
+            fileCount: files.length,
+            sigChanged,
+            vidChanged,
+            chatMetaChanged,
+            verUpdChanged,
+          });
+          return last;
+        }
+
+        await new Promise((r) => setTimeout(r, baseInterval));
+        continue;
+      }
+
       if (files.length > 0 || this.websiteCodeFromChatDetail(last) != null) {
         console.log('WebsiteService - poll complete, fileCount=', files.length);
         return last;
@@ -1712,6 +2137,31 @@ DESIGN (MANDATORY - PRODUCTION-READY):
       await new Promise((r) => setTimeout(r, baseInterval));
     }
     console.warn('WebsiteService - poll stopped; using last chat state (may be empty → triggers retry/sync)');
+    if (followUp && priorSig !== undefined) {
+      const finalSig = this.v0FilesContentSignature(last);
+      const finalVid = last.latestVersion?.id;
+      const vidOk = priorVid != null && finalVid != null && finalVid !== priorVid;
+      const verUpdOk =
+        priorLatestVersionUpdatedAt != null &&
+        last.latestVersion?.updatedAt != null &&
+        last.latestVersion.updatedAt !== priorLatestVersionUpdatedAt;
+      const tail = this.getLastAssistantTail(last);
+      const asstOk =
+        priorAssistantTail?.id != null &&
+        tail.id != null &&
+        (tail.id !== priorAssistantTail.id ||
+          (tail.updatedAt != null &&
+            priorAssistantTail.updatedAt != null &&
+            tail.updatedAt !== priorAssistantTail.updatedAt));
+      if (finalSig === priorSig && !vidOk && !verUpdOk) {
+        const errMsg = asstOk
+          ? 'v0 replied to your edit but did not publish updated project files in time. Wait a minute and try again.'
+          : 'Timed out waiting for v0 to apply this edit (no new files or version activity detected). Wait a moment and try again, or shorten the request.';
+        const err = new Error(errMsg) as Error & { status?: number };
+        err.status = 504;
+        throw err;
+      }
+    }
     return last;
   }
 
@@ -1772,6 +2222,102 @@ DESIGN (MANDATORY - PRODUCTION-READY):
     }
     chat = await this.waitForV0ChatReady(chat, responseMode === 'async');
     console.log('WebsiteService - v0 chat ready, chatId=', chat?.id || '(unknown)');
+    return chat;
+  }
+
+  /**
+   * Follow-up message on an existing v0 chat (same as v0-clone `chats.sendMessage`).
+   * Does not send `system`; conversation context stays on the platform.
+   */
+  private async invokeV0ChatSendMessage(
+    chatId: string,
+    message: string,
+    responseMode: 'sync' | 'async' = 'async',
+    /** Snapshot from GET /chats/:id immediately before sendMessage; avoids persisting stale files when latestVersion already had code. */
+    priorArtifact?: {
+      contentSig: string;
+      versionId?: string;
+      chatUpdatedAt?: string;
+      latestVersionUpdatedAt?: string;
+      assistantTail?: { id?: string; updatedAt?: string };
+    },
+  ): Promise<ChatDetail> {
+    const modelConfiguration = this.getV0ModelConfiguration();
+    const body: ChatsSendMessageRequest = {
+      message,
+      responseMode,
+    };
+    if (modelConfiguration) body.modelConfiguration = modelConfiguration;
+    console.log(
+      'WebsiteService - v0 chats.sendMessage',
+      'chatId=',
+      chatId,
+      'mode=',
+      responseMode,
+      responseMode === 'async'
+        ? '(then poll getById)'
+        : '(single long request — may hit client timeouts)',
+      'messageLength=',
+      message.length,
+    );
+    let result: ChatDetail | ReadableStream;
+    const useAxiosFirst = process.env.V0_CREATE_USE_AXIOS_FIRST !== '0';
+    try {
+      if (useAxiosFirst) {
+        result = await this.sendV0MessageWithAxios(chatId, body);
+      } else {
+        try {
+          result = await this.v0Platform.chats.sendMessage({ chatId, ...body });
+        } catch (e: unknown) {
+          const msg = this.formatV0NetworkError(e);
+          if (/UND_ERR_HEADERS_TIMEOUT|UND_ERR_CONNECT_TIMEOUT|ETIMEDOUT|ENOTFOUND/i.test(msg)) {
+            console.warn('WebsiteService - SDK sendMessage failed; retrying via axios...');
+            result = await this.sendV0MessageWithAxios(chatId, body);
+          } else {
+            throw e;
+          }
+        }
+      }
+    } catch (e: unknown) {
+      throw e;
+    }
+    if (result != null && typeof (result as ReadableStream).getReader === 'function') {
+      throw new Error(
+        `v0.chats.sendMessage returned a stream; use POST /website/:id/edit-stream for experimental_stream, or sync/async only here.`,
+      );
+    }
+    let chat = result as ChatDetail;
+    const r = chat as ChatDetail & { chat?: { id?: string } };
+    if (!chat.id && r.chat?.id) {
+      chat = { ...chat, id: r.chat.id } as ChatDetail;
+      console.log('WebsiteService - normalized chat id from nested response.chat.id (sendMessage)');
+    }
+    const resolvedId = chat.id || chatId;
+    if (!chat.id) {
+      chat = { ...chat, id: resolvedId } as ChatDetail;
+    }
+    let priorSig = priorArtifact?.contentSig;
+    let priorVid = priorArtifact?.versionId;
+    let priorChatUpd = priorArtifact?.chatUpdatedAt;
+    let priorLatestVerUpd = priorArtifact?.latestVersionUpdatedAt;
+    let priorAsstTail = priorArtifact?.assistantTail;
+    if (priorSig === undefined) {
+      priorSig = this.v0FilesContentSignature(chat);
+      priorVid = chat.latestVersion?.id;
+      priorChatUpd = chat.updatedAt;
+      priorLatestVerUpd = chat.latestVersion?.updatedAt;
+      const t = this.getLastAssistantTail(chat);
+      priorAsstTail = t.id ? t : undefined;
+    }
+    chat = await this.waitForV0ChatReady(chat, responseMode === 'async', {
+      followUpMessage: true,
+      priorFilesContentSig: priorSig,
+      priorVersionId: priorVid,
+      priorChatUpdatedAt: priorChatUpd,
+      priorLatestVersionUpdatedAt: priorLatestVerUpd,
+      priorAssistantTail: priorAsstTail?.id != null ? priorAsstTail : undefined,
+    });
+    console.log('WebsiteService - v0 sendMessage chat ready, chatId=', chat?.id || '(unknown)');
     return chat;
   }
 
@@ -1900,6 +2446,141 @@ DESIGN (MANDATORY - PRODUCTION-READY):
     }
 
     throw new Error('v0 generation failed after retries');
+  }
+
+  /** Continue an existing v0 chat with a short edit instruction (official v0-clone pattern). */
+  private async fetchWebsiteCodeFromV0SendMessage(
+    chatId: string,
+    userMessage: string,
+  ): Promise<{ responseContent: string; websiteCode: any; v0ChatId: string; v0DemoUrl?: string }> {
+    const MAX_V0_ATTEMPTS = Number(process.env.V0_MAX_RETRIES) || 3;
+    const RETRY_DELAY_MS = 1500;
+    const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+    let responseContent = '{}';
+    let websiteCode: any = null;
+
+    for (let attempt = 1; attempt <= MAX_V0_ATTEMPTS; attempt++) {
+      console.log('WebsiteService - v0 sendMessage attempt', attempt, 'of', MAX_V0_ATTEMPTS, 'chatId=', chatId);
+      const syncOnRetry = process.env.V0_WEBSITE_RETRY_WITH_SYNC !== '0';
+      const mode: 'sync' | 'async' = syncOnRetry && attempt > 1 ? 'sync' : 'async';
+      if (attempt > 1 && mode === 'sync') {
+        console.log(
+          'WebsiteService - sendMessage attempt',
+          attempt,
+          'uses sync because async+poll can hit persistent chat_not_found',
+        );
+      }
+      let priorArtifact:
+        | {
+            contentSig: string;
+            versionId?: string;
+            chatUpdatedAt?: string;
+            latestVersionUpdatedAt?: string;
+            assistantTail?: { id?: string; updatedAt?: string };
+          }
+        | undefined;
+      try {
+        const pre = await this.getV0ChatByIdRest(chatId);
+        const asst = this.getLastAssistantTail(pre);
+        priorArtifact = {
+          contentSig: this.v0FilesContentSignature(pre),
+          versionId: pre.latestVersion?.id,
+          chatUpdatedAt: pre.updatedAt,
+          latestVersionUpdatedAt: pre.latestVersion?.updatedAt,
+          assistantTail: asst.id ? asst : undefined,
+        };
+      } catch (e: unknown) {
+        console.warn(
+          'WebsiteService - pre-sendMessage GET (artifact baseline) failed:',
+          this.formatV0NetworkError(e),
+        );
+        priorArtifact = undefined;
+      }
+      let chat: ChatDetail;
+      try {
+        chat = await this.invokeV0ChatSendMessage(chatId, userMessage, mode, priorArtifact);
+      } catch (e: any) {
+        console.warn('WebsiteService - v0 sendMessage error:', this.formatV0NetworkError(e));
+        if (this.isV0NonRetryableHttpError(e)) {
+          throw e;
+        }
+        if (attempt < MAX_V0_ATTEMPTS) {
+          console.log('WebsiteService - Retrying sendMessage in', RETRY_DELAY_MS, 'ms...');
+          await delay(RETRY_DELAY_MS);
+          continue;
+        }
+        throw e;
+      }
+
+      responseContent = this.serializeChatForHistory(chat);
+      const refusalText = (chat.text || this.getLastAssistantContent(chat) || '').trim();
+      console.log(
+        'WebsiteService - v0 sendMessage chat',
+        chat.id,
+        'version',
+        chat.latestVersion?.status,
+        'fileCount',
+        chat.latestVersion?.files?.length ?? 0,
+      );
+
+      if (this.isRefusalResponse(refusalText)) {
+        console.warn('WebsiteService - v0 refusal on sendMessage attempt', attempt);
+        if (attempt < MAX_V0_ATTEMPTS) {
+          console.log('WebsiteService - Retrying in', RETRY_DELAY_MS, 'ms...');
+          await delay(RETRY_DELAY_MS);
+          continue;
+        }
+        const msg =
+          'The AI declined to apply this edit after ' +
+          MAX_V0_ATTEMPTS +
+          ' attempts. Try rephrasing your request.';
+        const err = new Error(msg) as Error & { status?: number };
+        err.status = 422;
+        throw err;
+      }
+
+      websiteCode = this.websiteCodeFromChatDetail(chat);
+      if (websiteCode?.files && Array.isArray(websiteCode.files)) {
+        websiteCode = this.convertV0FilesToStructure(websiteCode);
+      }
+
+      const hasNonEmptyLegacyHtml =
+        typeof websiteCode?.html === 'string' && websiteCode.html.trim().length > 0;
+      const hasValidCode =
+        (websiteCode?.components?.length > 0) ||
+        (websiteCode?.files?.length > 0) ||
+        !!(websiteCode?.viteConfig?.mainJsx || websiteCode?.viteConfig?.mainJs) ||
+        hasNonEmptyLegacyHtml ||
+        (typeof websiteCode?.js === 'string' && websiteCode.js.trim().length > 0) ||
+        (typeof websiteCode?.css === 'string' && websiteCode.css.trim().length > 0);
+      if (hasValidCode) {
+        console.log('WebsiteService - Valid code from sendMessage on attempt', attempt);
+        const resolvedId = chat.id || chatId;
+        return {
+          responseContent,
+          websiteCode,
+          v0ChatId: resolvedId,
+          v0DemoUrl: this.extractV0DemoFromChatDetail(chat),
+        };
+      }
+
+      console.warn('WebsiteService - No valid code on sendMessage attempt', attempt);
+      if (attempt < MAX_V0_ATTEMPTS) {
+        console.log('WebsiteService - Retrying in', RETRY_DELAY_MS, 'ms...');
+        await delay(RETRY_DELAY_MS);
+        continue;
+      }
+      const err = new Error(
+        'The AI did not return valid website code for this edit after ' +
+          MAX_V0_ATTEMPTS +
+          ' attempts. Try rephrasing or simplifying the request.',
+      ) as Error & { status?: number };
+      err.status = 422;
+      throw err;
+    }
+
+    throw new Error('v0 sendMessage failed after retries');
   }
 
   /**

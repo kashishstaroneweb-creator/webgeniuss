@@ -29,8 +29,9 @@ async function bootstrap() {
 
   const port = process.env.PORT || 3000;
   await app.listen(port);
-  // v0 generation can take a while for complex prompts; keep HTTP connections open longer.
-  app.getHttpServer().setTimeout(300000);
+  // v0 generation/edit can exceed 5m (polling + long sync); keep sockets open (default 900s, override with HTTP_SERVER_TIMEOUT_MS).
+  const serverTimeoutMs = Number(process.env.HTTP_SERVER_TIMEOUT_MS) || 900_000;
+  app.getHttpServer().setTimeout(serverTimeoutMs);
   console.log(`🚀 WebGenius API is running on: http://localhost:${port}`);
 }
 

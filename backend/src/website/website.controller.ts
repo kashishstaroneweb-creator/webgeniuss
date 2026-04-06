@@ -155,6 +155,33 @@ export class WebsiteController {
     return { url };
   }
 
+  /**
+   * v0 experimental_stream follow-up on the same chat as generation. Terminal SSE: `website-saved`, `website-error`.
+   */
+  @Post(':id/edit-stream')
+  @UseGuards(JwtAuthGuard)
+  async editStream(
+    @CurrentUser() user: any,
+    @Param('id') websiteId: string,
+    @Body() editDto: EditWebsiteDto,
+    @Res({ passthrough: false }) res: Response,
+  ) {
+    const userId = this.userIdFromRequest(user);
+    try {
+      await this.websiteService.pipeV0EditStream(res, userId, websiteId, editDto.editPrompt);
+    } catch (error: any) {
+      if (!res.headersSent) {
+        const message = error?.message || 'Unknown error during edit stream';
+        const status = error?.status || HttpStatus.INTERNAL_SERVER_ERROR;
+        throw new HttpException(
+          { message, statusCode: status, error: 'Website edit stream failed' },
+          status,
+          { cause: error },
+        );
+      }
+    }
+  }
+
   @Post(':id/edit')
   @UseGuards(JwtAuthGuard)
   async editWebsite(

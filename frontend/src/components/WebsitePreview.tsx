@@ -59,6 +59,56 @@ function wrapAdjacentJsxInFragment(code: string): string {
 }
 
 /**
+ * v0 often emits Next.js App Router `metadata` / `export const metadata`. Our preview runs all files in one
+ * inline Babel script, so duplicate `const metadata` across main + components causes "already been declared".
+ * Next metadata is unused in iframe preview — strip blocks and related imports.
+ */
+function stripNextJsMetadataForPreview(code: string): string {
+  if (!code || typeof code !== 'string') return code;
+  let s = code;
+  const headerPatterns = [
+    /export\s+const\s+metadata\s*(?::\s*[^\n=]+)?=\s*\{/,
+    /const\s+metadata\s*:\s*Metadata\s*=\s*\{/,
+    /const\s+metadata\s*=\s*\{/,
+  ];
+  let removed = true;
+  while (removed) {
+    removed = false;
+    for (const re of headerPatterns) {
+      const m = re.exec(s);
+      if (!m || m.index === undefined) continue;
+      const start = m.index;
+      const braceIdx = s.indexOf('{', start);
+      if (braceIdx === -1) continue;
+      let depth = 0;
+      let i = braceIdx;
+      for (; i < s.length; i++) {
+        const ch = s[i];
+        if (ch === '{') depth++;
+        else if (ch === '}') {
+          depth--;
+          if (depth === 0) {
+            i++;
+            break;
+          }
+        }
+      }
+      if (depth !== 0) continue;
+      let end = i;
+      while (end < s.length && /\s/.test(s[end])) end++;
+      if (s[end] === ';') end++;
+      s = s.slice(0, start) + '\n' + s.slice(end);
+      removed = true;
+      break;
+    }
+  }
+  s = s.replace(/import\s+type\s+\{[^}]*\}\s+from\s+['"]next['"]\s*;?\s*/g, '');
+  s = s.replace(/import\s+\{\s*Metadata\s*\}\s+from\s+['"]next['"]\s*;?\s*/g, '');
+  s = s.replace(/import\s+type\s+Metadata\s+from\s+['"]next['"]\s*;?\s*/g, '');
+  return s;
+}
+
+/**
  * Find identifiers that are used in the script but not declared (and not components/globals).
  * These get an empty-array fallback so the preview doesn't throw ReferenceError for any data variable.
  */
@@ -279,7 +329,8 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
                 .filter(c => c.language === 'jsx' || c.language === 'js' || c.language === 'tsx' || (!c.language && (/\\.(jsx|tsx)$/.test(c.path || '') || (c.code && (c.code.includes('from \'react\'') || c.code.includes('className'))))))
                 .map(c => {
                   // ALL transforms BEFORE any escaping (template literals → concat, assignment fixes)
-                  let code = sanitizeDollarInJsx(c.code);
+                  let code = stripNextJsMetadataForPreview(c.code);
+                  code = sanitizeDollarInJsx(code);
                   code = transformJsxAttributeTemplateLiterals(code);
                   code = sanitizeInvalidAssignment(code);
                   code = wrapAdjacentJsxInFragment(code);
@@ -372,7 +423,8 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
               
               if (mainJsx) {
                 // Process mainJsx - transforms first, then import stripping, then one escape at the end
-                let processedMain = sanitizeDollarInJsx(mainJsx);
+                let processedMain = stripNextJsMetadataForPreview(mainJsx);
+                processedMain = sanitizeDollarInJsx(processedMain);
                 processedMain = transformJsxAttributeTemplateLiterals(processedMain);
                 processedMain = sanitizeInvalidAssignment(processedMain);
                 processedMain = wrapAdjacentJsxInFragment(processedMain);
