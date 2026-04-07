@@ -34,7 +34,12 @@ interface WebsitePreviewProps {
 
 // Known globals and reserved names that must never get a fallback definition
 const PREVIEW_KNOWN_GLOBALS = new Set([
-  'React', 'ReactDOM', 'useState', 'useEffect', 'useRef', 'useCallback', 'useMemo', 'useContext', 'useReducer', 'createContext',
+  'React', 'ReactDOM', 'RemixRouter', 'ReactRouter', 'ReactRouterDOM',
+  'HashRouter', 'BrowserRouter', 'MemoryRouter', 'Routes', 'Route', 'Link', 'NavLink', 'Navigate', 'Outlet', 'Form',
+  'RouterProvider', 'createBrowserRouter', 'createHashRouter', 'createMemoryRouter', 'createRoutesFromElements',
+  'useParams', 'useNavigate', 'useLocation', 'useSearchParams', 'useRoutes', 'useOutlet', 'useOutletContext',
+  'useHref', 'useMatch', 'useResolvedPath', 'useNavigationType',
+  'useState', 'useEffect', 'useRef', 'useCallback', 'useMemo', 'useContext', 'useReducer', 'createContext',
   'createElement', 'Fragment', 'StrictMode', 'Component', 'PureComponent', 'Children', 'cloneElement', 'isValidElement',
   'document', 'window', 'console', 'fetch', 'JSON', 'Object', 'Array', 'Number', 'String', 'Boolean', 'Map', 'Set', 'Promise',
   'localStorage', 'sessionStorage',
@@ -317,6 +322,17 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
               // React components - use React CDN with Babel
               const styleCss = viteConfig?.styleCss || '';
               const mainJsx = viteConfig?.mainJsx || viteConfig?.mainJs || '';
+              const reactRouterHint =
+                /from\s+['"]react-router(-dom)?['"]/.test(mainJsx || '') ||
+                siteComponents.some((c) => /from\s+['"]react-router(-dom)?['"]/.test(c.code || '')) ||
+                /\b(HashRouter|BrowserRouter|MemoryRouter|Routes|NavLink|RouterProvider|createBrowserRouter|createHashRouter)\b/.test(
+                  mainJsx || '',
+                ) ||
+                siteComponents.some((c) =>
+                  /\b(HashRouter|BrowserRouter|MemoryRouter|Routes|NavLink|RouterProvider|createBrowserRouter|createHashRouter)\b/.test(
+                    c.code || '',
+                  ),
+                );
               
               // Process component code - remove ES6 imports/exports and convert to global scope
               // Fix JSX ${expr} → {'$' + expr} so Babel doesn't treat ${ as template literal (Unterminated template)
@@ -715,6 +731,13 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
   <div id="${rootElement}"></div>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  ${
+    reactRouterHint
+      ? `<script src="https://unpkg.com/@remix-run/router@1.23.0/dist/router.umd.min.js"></script>
+  <script src="https://unpkg.com/react-router@6.30.1/dist/umd/react-router.development.js"></script>
+  <script src="https://unpkg.com/react-router-dom@6.30.1/dist/umd/react-router-dom.development.js"></script>`
+      : ''
+  }
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script type="text/babel" data-presets="react">
     (function() {
@@ -729,6 +752,14 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
         
         // Make React hooks available
         const { useState, useEffect, useRef, useCallback, useMemo, useContext } = React;
+        ${
+          reactRouterHint
+            ? `if (typeof RemixRouter === 'undefined' || typeof ReactRouter === 'undefined' || typeof ReactRouterDOM === 'undefined') {
+          throw new Error('React Router libraries not loaded');
+        }
+        const { HashRouter, BrowserRouter, MemoryRouter, Routes, Route, Link, NavLink, Navigate, Outlet, Form, RouterProvider, createBrowserRouter, createHashRouter, createMemoryRouter, createRoutesFromElements, useParams, useNavigate, useLocation, useSearchParams, useRoutes, useOutlet, useOutletContext, useHref, useMatch, useResolvedPath } = ReactRouterDOM;`
+            : ''
+        }
         
         // Define common data variables only if user code does not declare them (avoids "already been declared" errors)
         ${escapeBackslashOnly(reactFallbackLines)}
