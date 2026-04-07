@@ -8,7 +8,6 @@ import {
   CreditCard, 
   LogOut,
   Sparkles,
-  Globe,
   Menu,
   X
 } from 'lucide-react';
@@ -22,7 +21,6 @@ const Sidebar = () => {
 
   const menuItems = [
     { path: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
-    { path: '/websites', icon: Globe, label: 'Websites' },
     { path: '/profile', icon: User, label: 'Profile' },
     { path: '/history', icon: History, label: 'History' },
     { path: '/subscription', icon: CreditCard, label: 'Subscription' },

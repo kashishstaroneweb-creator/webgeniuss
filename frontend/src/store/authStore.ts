@@ -17,10 +17,27 @@ interface AuthState {
   updateUser: (user: Partial<User>) => void;
 }
 
+/** Read session synchronously so the first paint after refresh is already authenticated (keeps ?website= etc.). */
+function readStoredAuth(): Pick<AuthState, 'user' | 'token' | 'isAuthenticated'> {
+  if (typeof window === 'undefined') {
+    return { user: null, token: null, isAuthenticated: false };
+  }
+  try {
+    const token = localStorage.getItem('token');
+    const userStr = localStorage.getItem('user');
+    if (token && userStr) {
+      const user = JSON.parse(userStr) as User;
+      return { user, token, isAuthenticated: true };
+    }
+  } catch {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+  }
+  return { user: null, token: null, isAuthenticated: false };
+}
+
 export const useAuthStore = create<AuthState>((set) => ({
-  user: null,
-  token: null,
-  isAuthenticated: false,
+  ...readStoredAuth(),
   setAuth: (user, token) => {
     localStorage.setItem('token', token);
     localStorage.setItem('user', JSON.stringify(user));

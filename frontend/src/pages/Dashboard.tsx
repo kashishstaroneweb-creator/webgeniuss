@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useAuthStore } from '@/store/authStore';
 import { useSidebarStore } from '@/store/sidebarStore';
@@ -78,8 +78,10 @@ interface GeneratedWebsite {
 
 
 const Dashboard = () => {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const websiteIdFromUrl = searchParams.get('website');
+  const prevWebsiteIdFromUrlRef = useRef<string | null>(null);
+  const generatedWebsiteRef = useRef<GeneratedWebsite | null>(null);
   const { user } = useAuthStore();
   const { setCollapsed } = useSidebarStore();
   const [prompt, setPrompt] = useState('');
@@ -98,6 +100,13 @@ const Dashboard = () => {
   /** Add-on prompt for editing the current website in the same chat */
   const [addOnPrompt, setAddOnPrompt] = useState('');
   const [editLoading, setEditLoading] = useState(false);
+
+  generatedWebsiteRef.current = generatedWebsite;
+
+  const syncWebsiteIdToUrl = (id: string) => {
+    if (!id?.trim()) return;
+    setSearchParams({ website: id }, { replace: true });
+  };
 
   const showSplitView = isGenerating || loadingHistoryWebsite || generatedWebsite !== null;
 
@@ -130,13 +139,37 @@ const Dashboard = () => {
     if (generatedWebsite) setGenerationStep('done');
   }, [generatedWebsite]);
 
+  // Leaving ?website= (e.g. sidebar "New project") must clear deep-linked state — URL and UI stay in sync
+  useEffect(() => {
+    const prev = prevWebsiteIdFromUrlRef.current;
+    prevWebsiteIdFromUrlRef.current = websiteIdFromUrl;
+    if (prev && !websiteIdFromUrl) {
+      setGeneratedWebsite(null);
+      setPrompt('');
+      setWebsiteName('');
+      setAddOnPrompt('');
+      setShowCodeView(false);
+      setIsGenerating(false);
+      setLoading(false);
+      setLoadingHistoryWebsite(false);
+      setEditLoading(false);
+      setActiveTab('component-0');
+      setActiveComponentIndex(0);
+      setRealPreviewFullscreen(false);
+    }
+  }, [websiteIdFromUrl]);
+
   // Load website from history when ?website=id is in URL (e.g. from sidebar Recents click)
   useEffect(() => {
     if (!websiteIdFromUrl) return;
+    // Just generated/edited this id — URL was synced; avoid refetch + loading flash (ref = latest id without adding to deps)
+    if (generatedWebsiteRef.current?.id === websiteIdFromUrl) return;
+    let cancelled = false;
     const loadHistoryWebsite = async () => {
       setLoadingHistoryWebsite(true);
       try {
         const res = await api.get(`/website/${websiteIdFromUrl}`);
+        if (cancelled) return;
         const data = res.data;
         setGeneratedWebsite({
           id: data.id,
@@ -156,12 +189,15 @@ const Dashboard = () => {
         setWebsiteName(data.websiteName || '');
         setCollapsed(true);
       } catch (err) {
-        console.error('Failed to load website from history:', err);
+        if (!cancelled) console.error('Failed to load website from history:', err);
       } finally {
-        setLoadingHistoryWebsite(false);
+        if (!cancelled) setLoadingHistoryWebsite(false);
       }
     };
     loadHistoryWebsite();
+    return () => {
+      cancelled = true;
+    };
   }, [websiteIdFromUrl, setCollapsed]);
 
   useEffect(() => {
@@ -363,6 +399,7 @@ const Dashboard = () => {
       });
 
       setGeneratedWebsite(saved);
+      if (saved.id) syncWebsiteIdToUrl(saved.id);
       // Keep prompt and websiteName visible on the left for "generate again"
       // Automatically collapse sidebar when website is generated
       setCollapsed(true);
@@ -416,6 +453,7 @@ const Dashboard = () => {
       const nextId = saved.id || websiteId;
       setGeneratedWebsite({ ...saved, id: nextId });
       setAddOnPrompt('');
+      if (nextId) syncWebsiteIdToUrl(nextId);
     };
 
     try {
@@ -573,7 +611,7 @@ const Dashboard = () => {
             {/* Prompt Input */}
             <div className="mb-8">
               <div className="mb-4 w-full max-w-3xl mx-auto">
-                <label className="text-sm font-medium mb-2 block text-foreground text-center">Website Name (Optional)</label>
+                <label className="text-sm font-medium mb-2 block text-foreground text-center">Website Name</label>
                 <div className="flex justify-center">
                   <input
                     type="text"
@@ -629,7 +667,7 @@ const Dashboard = () => {
             {/* Website Name + Describe your website – only while generating/loading; removed once website is generated */}
             {!generatedWebsite && (
               <div className="space-y-3">
-                <label className="text-sm font-medium block">Website Name (optional)</label>
+                <label className="text-sm font-medium block">Website Name</label>
                 <input
                   type="text"
                   value={websiteName}
@@ -1295,7 +1333,7 @@ const Dashboard = () => {
                               <div className="fixed inset-0 z-50 bg-background flex flex-col">
                                 <div className="flex items-center justify-between p-4 border-b bg-card flex-shrink-0">
                                   <h2 className="text-lg font-semibold">
-                                    {generatedWebsite.websiteName || 'Preview'} — v0 hosted
+                                    {generatedWebsite.websiteName || 'Preview'} hosted by Webgenius
                                   </h2>
                                   <Button
                                     variant="ghost"
@@ -1318,8 +1356,7 @@ const Dashboard = () => {
                               <div className="border rounded-lg overflow-hidden bg-card flex flex-col flex-1 min-h-[600px]">
                                 <div className="flex items-center justify-between p-3 border-b bg-muted/50 flex-shrink-0">
                                   <div>
-                                    <h3 className="text-sm font-medium">{generatedWebsite.websiteName || 'Preview'}</h3>
-                                    <p className="text-xs text-muted-foreground">Hosted preview (v0 Platform)</p>
+                                    <h3 className="text-sm font-medium">{generatedWebsite.websiteName || 'Preview'}</h3>                          
                                   </div>
                                   <Button
                                     variant="ghost"

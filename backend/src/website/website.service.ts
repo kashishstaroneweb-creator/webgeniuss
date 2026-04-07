@@ -471,11 +471,10 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
 
       const systemPrompt = this.getV0WebsiteSystemPrompt();
 
-      // Use raw prompt as requested (no automatic prompt enhancement).
-      const userPrompt = (prompt || '').trim();
+      const userPrompt = this.buildV0GenerationUserMessage(prompt, websiteName);
 
       console.log('WebsiteService.generateWebsite - Original prompt length:', prompt.length);
-      console.log('WebsiteService.generateWebsite - Final prompt length:', userPrompt.length);
+      console.log('WebsiteService.generateWebsite - Final message length:', userPrompt.length);
 
       let { responseContent, websiteCode, v0ChatId, v0DemoUrl } = await this.fetchWebsiteCodeFromV0(
         systemPrompt,
@@ -660,7 +659,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
    */
   async pipeV0GenerationStream(res: Response, userId: string, prompt: string, websiteName: string): Promise<void> {
     const systemPrompt = this.getV0WebsiteSystemPrompt();
-    const userMessage = (prompt || '').trim();
+    const userMessage = this.buildV0GenerationUserMessage(prompt, websiteName);
     const modelConfiguration = this.getV0ModelConfiguration();
     const body: Record<string, unknown> = {
       message: userMessage,
@@ -1226,6 +1225,23 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       newV0DemoUrl,
     );
     return { ...saved, editV0Path };
+  }
+
+  /**
+   * v0 only receives `message` on chat create — the model never saw `websiteName` unless we inline it.
+   * Skip auto placeholders like `Website 1739…` so we do not force a fake brand name.
+   */
+  private buildV0GenerationUserMessage(prompt: string, websiteName: string): string {
+    const p = (prompt || '').trim();
+    const raw = (websiteName || '').trim();
+    const looksAutoPlaceholder = /^Website\s+\d{10,}$/i.test(raw);
+    const name = looksAutoPlaceholder ? '' : raw;
+    if (!name) return p;
+    return (
+      `Site name (use for <title>, document/branding text, header/logo label, and package.json "name" where applicable — keep this exact name, do not substitute a different product title):\n` +
+      `${JSON.stringify(name)}\n\n` +
+      `Requirements:\n${p}`
+    );
   }
 
   /**

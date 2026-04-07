@@ -3,7 +3,6 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import {
   LayoutDashboard,
-  Globe,
   User,
   History,
   CreditCard,
@@ -20,7 +19,6 @@ import api from '@/lib/api';
 
 const navItems = [
   { icon: LayoutDashboard, label: 'Dashboard', href: '/dashboard' },
-  { icon: Globe, label: 'Projects', href: '/websites' },
   { icon: History, label: 'History', href: '/history' },
   { icon: User, label: 'Profile', href: '/profile' },
   { icon: CreditCard, label: 'Billing', href: '/subscription' },
@@ -97,7 +95,11 @@ export function AppSidebar() {
     >
       {/* Logo */}
       <div className="flex h-16 items-center justify-between border-b border-sidebar-border px-4">
-        <Link to="/dashboard" className="flex items-center gap-2">
+        <Link
+          to="/dashboard"
+          className="flex items-center gap-2"
+          title={isCollapsed ? 'WebGenius' : undefined}
+        >
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent">
             <Sparkles className="h-4 w-4 text-accent-foreground" />
           </div>
@@ -108,6 +110,7 @@ export function AppSidebar() {
         <button
           type="button"
           onClick={toggle}
+          title={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           className="rounded-md p-1.5 text-muted-foreground transition-all duration-200 hover:bg-sidebar-accent hover:text-sidebar-foreground active:scale-95"
         >
           <ChevronLeft
@@ -123,6 +126,7 @@ export function AppSidebar() {
       <div className="p-3">
         <Link
           to="/dashboard"
+          title={isCollapsed ? 'New Project' : undefined}
           className={cn(
             'flex w-full items-center justify-center gap-2 rounded-lg bg-primary py-2.5 font-medium text-primary-foreground transition-all duration-200 hover:bg-primary/90 active:scale-95',
             isCollapsed ? 'px-2' : 'px-4'
@@ -143,6 +147,7 @@ export function AppSidebar() {
               <Link
                 key={item.label}
                 to={item.href}
+                title={isCollapsed ? item.label : undefined}
                 className={cn(
                   'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-all duration-200',
                   isActive
@@ -224,6 +229,7 @@ export function AppSidebar() {
             'flex items-center gap-3 rounded-lg px-3 py-2',
             isCollapsed && 'justify-center px-2'
           )}
+          title={isCollapsed ? user?.name || 'User' : undefined}
         >
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent/20 text-sm font-medium text-accent">
             {user?.name ? getInitials(user.name) : 'U'}

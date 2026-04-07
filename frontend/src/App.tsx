@@ -9,7 +9,6 @@ import Dashboard from '@/pages/Dashboard';
 import Profile from '@/pages/Profile';
 import History from '@/pages/History';
 import Subscription from '@/pages/Subscription';
-import Websites from '@/pages/Websites';
 
 const AuthCallback = () => {
   const [searchParams] = useSearchParams();
@@ -42,11 +41,6 @@ const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   const { isAuthenticated } = useAuthStore();
 
   if (!isAuthenticated) {
-    const token = localStorage.getItem('token');
-    if (token) {
-      // Try to validate token
-      return <Navigate to="/login" replace />;
-    }
     return <Navigate to="/login" replace />;
   }
 
@@ -76,19 +70,7 @@ function App() {
     const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
     const initialTheme = savedTheme || (prefersDark ? 'dark' : 'dark'); // Default to dark
     document.documentElement.classList.toggle('dark', initialTheme === 'dark');
-    
-    // Initialize auth from localStorage
-    const token = localStorage.getItem('token');
-    const userStr = localStorage.getItem('user');
-    if (token && userStr) {
-      try {
-        const user = JSON.parse(userStr);
-        useAuthStore.getState().setAuth(user, token);
-      } catch (e) {
-        localStorage.removeItem('token');
-        localStorage.removeItem('user');
-      }
-    }
+    // Auth is hydrated synchronously in authStore (readStoredAuth) so refresh keeps URL query params.
   }, []);
 
   return (
@@ -144,9 +126,7 @@ function App() {
           path="/websites"
           element={
             <ProtectedRoute>
-              <Layout>
-                <Websites />
-              </Layout>
+              <Navigate to="/history" replace />
             </ProtectedRoute>
           }
         />

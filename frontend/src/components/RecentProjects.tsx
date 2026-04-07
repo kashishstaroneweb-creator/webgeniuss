@@ -88,7 +88,7 @@ export function RecentProjects() {
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-lg font-semibold text-foreground">Recent Projects</h2>
           <Link
-            to="/websites"
+            to="/history"
             className="text-sm text-muted-foreground hover:text-accent transition-colors"
           >
             View all
@@ -106,7 +106,7 @@ export function RecentProjects() {
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-lg font-semibold text-foreground">Recent Projects</h2>
         <Link
-          to="/websites"
+          to="/history"
           className="text-sm text-muted-foreground hover:text-accent transition-colors"
         >
           View all
@@ -150,7 +150,7 @@ export function RecentProjects() {
                     Published
                   </span>
                   <Link
-                    to={`/websites`}
+                    to="/history"
                     className="rounded-md p-1 text-muted-foreground transition-all duration-200 hover:bg-secondary hover:text-foreground active:scale-95"
                   >
                     <ExternalLink className="h-3.5 w-3.5" />
