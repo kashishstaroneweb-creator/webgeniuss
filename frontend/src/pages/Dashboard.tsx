@@ -644,9 +644,9 @@ const Dashboard = () => {
         </div>
       ) : (
         // Split view after generation starts – left: same input + processing status (v0-style)
-        <div className="flex-1 flex gap-6 p-8 overflow-hidden h-full">
+        <div className="flex-1 flex flex-col lg:flex-row gap-6 p-4 sm:p-6 lg:p-8 overflow-hidden h-full">
           {/* Left Side – Input stays visible + 3-line processing status */}
-          <div className="w-1/2 flex flex-col space-y-6 overflow-y-auto pr-4 h-full">
+          <div className="w-full lg:w-2/5 min-w-0 flex flex-col space-y-6 overflow-y-auto lg:pr-4 h-full">
             <div>
               <h1 className="text-2xl md:text-3xl font-bold mb-1">
                 {generatedWebsite
@@ -856,7 +856,7 @@ const Dashboard = () => {
           </div>
 
           {/* Right Side - Preview Section */}
-          <div className="w-1/2 flex flex-col overflow-hidden h-full">
+          <div className="w-full lg:w-3/5 min-w-0 flex flex-col overflow-hidden h-full">
             <Card className="flex-1 flex flex-col overflow-hidden h-full">
               <CardHeader className="flex-shrink-0">
                 <div className="flex items-center justify-between">
@@ -917,15 +917,15 @@ const Dashboard = () => {
                   )}
                 </div>
               </CardHeader>
-              <CardContent className="flex-1 overflow-hidden flex flex-col pt-6">
+              <CardContent className="flex-1 overflow-hidden flex flex-col pt-6 min-w-0">
                 {(loading || loadingHistoryWebsite) && !generatedWebsite ? (
                   <GeneratingLoader />
                 ) : generatedWebsite ? (
                   // Generated Content
-                  <div className="flex-1 overflow-hidden flex flex-col">
+                  <div className="flex-1 overflow-hidden flex flex-col min-w-0">
                     {showCodeView ? (
                       // Code View - Component-based or Legacy
-                      <div className="flex-1 flex flex-col overflow-hidden">
+                      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
                         {generatedWebsite.components && generatedWebsite.components.length > 0 ? (
                           // Component-based tabs
                           <>
@@ -1007,7 +1007,7 @@ const Dashboard = () => {
                                 </button>
                               )}
                             </div>
-                            <div className="flex-1 overflow-auto">
+                            <div className="flex-1 overflow-auto min-w-0">
                               <div className="rounded-lg overflow-hidden border h-full">
                                 {activeTab.startsWith('component-') && (
                                   <SyntaxHighlighter
@@ -1227,7 +1227,7 @@ const Dashboard = () => {
                             script.js
                           </button>
                         </div>
-                        <div className="flex-1 overflow-auto">
+                        <div className="flex-1 overflow-auto min-w-0">
                           <div className="rounded-lg overflow-hidden border h-full">
                             {activeTab === 'html' && (
                               <SyntaxHighlighter
@@ -1326,7 +1326,7 @@ const Dashboard = () => {
                       </div>
                     ) : (
                       // Preview: v0 hosted iframe when available; otherwise client-side WebsitePreview (DB payload — no server disk build)
-                      <div className="flex-1 overflow-auto h-full flex flex-col min-h-[600px]">
+                      <div className="flex-1 overflow-auto h-full flex flex-col min-h-[600px] min-w-0">
                         {generatedWebsite?.v0DemoUrl ? (
                           <>
                             {realPreviewFullscreen ? (

@@ -1,120 +1,146 @@
-/**
- * GeneratingLoader – Cool GIF (no box) + live code stream
- */
-import React, { useState, useEffect } from 'react';
-
-// Single cool cat-coding GIF (illustration style, no box) – Tenor
-const COOL_GIF = 'https://media1.tenor.com/m/LSDeBe2JAfoAAAAd/cat-coding.gif';
-
-// Fake "live" code lines – generation
-const CODE_LINES = [
-  { text: 'const website = await ai.generate();', type: 'js' },
-  { text: '<div className="your-site">...</div>', type: 'html' },
-  { text: '.hero { background: var(--accent); }', type: 'css' },
-  { text: '// Our AI (and this legend) are on it 🐱', type: 'comment' },
-  { text: 'return { html, css, js };', type: 'js' },
-  { text: 'npm run build... just kidding, we got you', type: 'comment' },
-  { text: 'export default function App() { ... }', type: 'js' },
-  { text: '// Compiling good vibes only ✨', type: 'comment' },
-];
-
-// Build preview – same funky vibe, build-themed lines
-const BUILD_PREVIEW_LINES = [
-  { text: 'npm install', type: 'js' },
-  { text: 'vite build', type: 'js' },
-  { text: '// Bundling your components...', type: 'comment' },
-  { text: 'dist/index.html ✓', type: 'comment' },
-  { text: '// Almost there 🚀', type: 'comment' },
-  { text: 'assets/index-*.js', type: 'js' },
-  { text: '// Real preview, no Babel in browser', type: 'comment' },
-];
+import { useEffect, useState } from 'react';
+import { motion } from 'framer-motion';
+import { Sparkles, Zap } from 'lucide-react';
+import { LoaderFileTree } from '@/components/loader/LoaderFileTree';
+import { LoaderCodeEditor } from '@/components/loader/LoaderCodeEditor';
+import { LoaderPreviewPanel } from '@/components/loader/LoaderPreviewPanel';
+import { LoaderTerminal } from '@/components/loader/LoaderTerminal';
 
 export interface GeneratingLoaderProps {
-  /** Override main title (e.g. "Building preview...") */
   title?: string;
-  /** Override subtitle */
   subtitle?: string;
-  /** Use build-themed code lines instead of generation lines */
   variant?: 'generating' | 'building';
 }
 
 export function GeneratingLoader({ title, subtitle, variant = 'generating' }: GeneratingLoaderProps) {
-  const [codeIndex, setCodeIndex] = useState(0);
-
-  const lines = variant === 'building' ? BUILD_PREVIEW_LINES : CODE_LINES;
-  const lineCount = lines.length;
+  const [progress, setProgress] = useState(0);
 
   useEffect(() => {
-    const t = setInterval(() => {
-      setCodeIndex((i) => (i + 1) % lineCount);
-    }, 1200);
-    return () => clearInterval(t);
-  }, [lineCount]);
+    const progressInterval = setInterval(() => {
+      setProgress((prev) => {
+        if (prev >= 96) {
+          return 96;
+        }
+        const increment = Math.random() * 1.5 + 0.5;
+        return Math.min(prev + increment, 96);
+      });
+    }, 150);
 
-  const currentCode = lines[codeIndex];
+    return () => clearInterval(progressInterval);
+  }, []);
 
   const displayTitle = title ?? (variant === 'building' ? 'Building preview...' : 'Generating your website...');
-  const displaySubtitle = subtitle ?? (variant === 'building' ? 'Running npm install & vite build' : 'Our AI is crafting your site with care');
+  const displaySubtitle =
+    subtitle ??
+    (variant === 'building'
+      ? 'Running npm install & vite build'
+      : 'v0 is generating your website');
 
   return (
-    <div className="flex-1 flex items-center justify-center min-h-[380px] p-4">
-      <div className="text-center space-y-6 max-w-lg mx-auto">
-        <style>{`
-          @keyframes gen-code-in {
-            0% { opacity: 0; transform: translateY(4px); }
-            20% { opacity: 1; transform: translateY(0); }
-            80% { opacity: 1; }
-            100% { opacity: 0; transform: translateY(-4px); }
-          }
-          .gen-code-line { animation: gen-code-in 1.2s ease-out forwards; }
-        `}</style>
+    <div className="relative min-h-[480px] w-full overflow-hidden rounded-xl border border-border/50 bg-background">
+      <div
+        className="absolute inset-0 opacity-[0.02]"
+        style={{
+          backgroundImage:
+            'linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px)',
+          backgroundSize: '50px 50px',
+        }}
+      />
+      <div className="absolute -left-40 -top-40 h-80 w-80 rounded-full bg-primary/10 blur-[100px]" />
+      <div className="absolute -bottom-40 -right-40 h-80 w-80 rounded-full bg-accent/10 blur-[100px]" />
 
-        {/* GIF – no box; blend removes white/light background */}
-        <div className="flex justify-center [isolation:isolate]">
-          <img
-            src={COOL_GIF}
-            alt="Cat coding"
-            className="w-[320px] h-auto max-h-[220px] object-contain drop-shadow-2xl mix-blend-multiply dark:brightness-110 dark:contrast-105"
-          />
+      <div className="relative z-10 flex h-full min-h-[480px] flex-col">
+        <header className="border-b border-border/50 bg-card/30 backdrop-blur-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
+            <div className="flex items-center gap-3">
+              <motion.div
+                className="flex items-center gap-2 rounded-full border border-primary/50 bg-primary/10 px-3 py-1.5"
+                animate={{
+                  boxShadow: [
+                    '0 0 10px rgba(59,130,246, 0)',
+                    '0 0 20px rgba(59,130,246, 0.3)',
+                    '0 0 10px rgba(59,130,246, 0)',
+                  ],
+                }}
+                transition={{ duration: 2, repeat: Infinity }}
+              >
+                <motion.div animate={{ rotate: 360 }} transition={{ duration: 3, repeat: Infinity, ease: 'linear' }}>
+                  <Sparkles className="size-4 text-primary" />
+                </motion.div>
+                <span className="text-sm font-medium text-primary">{displayTitle}</span>
+              </motion.div>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <Zap className="size-4 text-primary" />
+                <span className="text-sm text-muted-foreground">{Math.round(progress)}% complete</span>
+              </div>
+              <div className="h-2 w-32 overflow-hidden rounded-full bg-secondary">
+                <motion.div
+                  className="h-full bg-gradient-to-r from-primary to-accent"
+                  style={{ width: `${progress}%` }}
+                  transition={{ duration: 0.3 }}
+                />
+              </div>
+            </div>
+          </div>
+        </header>
+
+        <div className="flex flex-1 overflow-hidden">
+          <motion.div
+            className="hidden w-56 shrink-0 border-r border-border/50 md:block"
+            initial={{ x: -20, opacity: 0 }}
+            animate={{ x: 0, opacity: 1 }}
+            transition={{ delay: 0.2 }}
+          >
+            <LoaderFileTree progress={progress} />
+          </motion.div>
+
+          <div className="flex flex-1 flex-col overflow-hidden lg:flex-row">
+            <motion.div
+              className="flex-1 p-3"
+              initial={{ y: 20, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              transition={{ delay: 0.3 }}
+            >
+              <LoaderCodeEditor progress={progress} variant={variant} />
+            </motion.div>
+
+            <motion.div
+              className="flex w-full flex-col gap-3 p-3 lg:w-96"
+              initial={{ x: 20, opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              transition={{ delay: 0.4 }}
+            >
+              <div className="flex-1 min-h-[200px]">
+                <LoaderPreviewPanel progress={progress} />
+              </div>
+
+              <div className="h-48 shrink-0">
+                <LoaderTerminal progress={progress} variant={variant} />
+              </div>
+            </motion.div>
+          </div>
         </div>
 
-        {/* "Live" code strip */}
-        <div className="rounded-xl bg-[#0d1117] border border-border overflow-hidden text-left">
-          <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-[#161b22]">
-            <span className="w-2.5 h-2.5 rounded-full bg-red-500/80" />
-            <span className="w-2.5 h-2.5 rounded-full bg-yellow-500/80" />
-            <span className="w-2.5 h-2.5 rounded-full bg-green-500/80" />
-            <span className="ml-2 text-[10px] text-muted-foreground font-mono">{variant === 'building' ? 'build.ts' : 'generating.tsx'}</span>
-          </div>
-          <div className="px-3 py-2.5 font-mono text-xs min-h-[44px] flex items-center">
-            <span className="text-muted-foreground select-none">$ </span>
-            <span key={codeIndex} className="gen-code-line inline-block ml-1">
-              {currentCode.type === 'comment' ? (
-                <span className="text-gray-500">{currentCode.text}</span>
-              ) : currentCode.type === 'js' ? (
-                <span className="text-green-400">{currentCode.text}</span>
-              ) : currentCode.type === 'html' ? (
-                <span className="text-orange-300">{currentCode.text}</span>
-              ) : (
-                <span className="text-pink-300">{currentCode.text}</span>
-              )}
+        <footer className="flex items-center justify-between border-t border-border/50 bg-card/30 px-4 py-2 backdrop-blur-sm">
+          <div className="flex items-center gap-4 text-xs text-muted-foreground">
+            <span className="flex items-center gap-1.5">
+              <motion.div
+                className="h-2 w-2 rounded-full bg-green-500"
+                animate={{ opacity: [1, 0.5, 1] }}
+                transition={{ duration: 1, repeat: Infinity }}
+              />
+              Connected
             </span>
-            <span className="inline-block w-2 h-4 ml-0.5 bg-green-500 animate-pulse" />
+            <span>{displaySubtitle}</span>
           </div>
-        </div>
-
-        <div className="space-y-1">
-          <h3 className="text-lg font-semibold">{displayTitle}</h3>
-          <p className="text-sm text-muted-foreground">
-            {displaySubtitle}
-          </p>
-        </div>
-
-        <div className="flex gap-2 justify-center">
-          <div className="w-2 h-2 bg-accent rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-          <div className="w-2 h-2 bg-accent rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-          <div className="w-2 h-2 bg-accent rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-        </div>
+          <div className="flex items-center gap-4 text-xs text-muted-foreground">
+            <span>Spaces: 2</span>
+            <span>{variant === 'building' ? 'Build mode' : 'Generate mode'}</span>
+          </div>
+        </footer>
       </div>
     </div>
   );
