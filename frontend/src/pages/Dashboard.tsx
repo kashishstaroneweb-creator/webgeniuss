@@ -5,15 +5,17 @@ import { useSidebarStore } from '@/store/sidebarStore';
 import api from '@/lib/api';
 import Button from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Sparkles, Send, Eye, Code, Monitor, Download, Maximize2, Minimize2, Paperclip, Wand2, Mic, MicOff } from 'lucide-react';
+import { Sparkles, Send, Eye, Code, Monitor, Download, Maximize2, Minimize2, Paperclip, Wand2, Mic } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import WebsitePreview from '@/components/WebsitePreview';
 import { GeneratingLoader } from '@/components/GeneratingLoader';
 import { PromptInput } from '@/components/PromptInput';
 import { StatsCards } from '@/components/StatsCards';
 import { RecentProjects } from '@/components/RecentProjects';
+import { VoiceVisualizer } from '@/components/VoiceVisualizer';
 import { useVoiceRecognition } from '@/lib/useVoiceRecognition';
 import { useVoiceSynthesis } from '@/lib/useVoiceSynthesis';
+import { useTypewriter } from '@/lib/useTypewriter';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import JSZip from 'jszip';
@@ -112,11 +114,14 @@ const Dashboard = () => {
     }
   };
 
-  const { isListening: isEditListening, toggleListening: toggleEditListening, transcript: editTranscript } = useVoiceRecognition({
+  const { isListening: isEditListening, toggleListening: toggleEditListening } = useVoiceRecognition({
     onTranscriptChange: (text) => setAddOnPrompt(text),
     onEnd: handleVoiceEditEnd,
-    continuous: false
   });
+
+  const { displayed: displayedWebsiteName } = useTypewriter(
+    generatedWebsite?.websiteName ?? ''
+  );
 
   generatedWebsiteRef.current = generatedWebsite;
 
@@ -679,7 +684,7 @@ const Dashboard = () => {
             <div>
               <h1 className="text-2xl md:text-3xl font-bold mb-1">
                 {generatedWebsite
-                  ? generatedWebsite.websiteName
+                  ? <>{displayedWebsiteName}<span className="animate-pulse text-green-400">|</span></>
                   : loadingHistoryWebsite
                     ? 'Loading...'
                     : 'Generating your website'}
@@ -790,18 +795,24 @@ const Dashboard = () => {
                             : "text-muted-foreground hover:bg-secondary hover:text-foreground"
                         )}
                       >
-                        {isEditListening ? <Mic className="h-4 w-4 animate-pulse" /> : <Mic className="h-4 w-4" />}
-                        <span className="hidden sm:inline">{isEditListening ? "Listening..." : "Voice"}</span>
+                        {isEditListening ? (
+                          <VoiceVisualizer isListening={isEditListening} />
+                        ) : (
+                          <>
+                            <Mic className="h-4 w-4" />
+                            <span className="hidden sm:inline">Voice</span>
+                          </>
+                        )}
                       </button>
                     </div>
                     <button
                       type="button"
-                      onClick={handleEdit}
+                      onClick={() => handleEdit()}
                       disabled={!addOnPrompt.trim() || editLoading || loading}
                       className={cn(
                         'flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all duration-200',
                         addOnPrompt.trim() && !editLoading && !loading
-                          ? 'bg-primary text-primary-foreground hover:bg-primary/90 active:scale-95'
+                          ? 'btn-gradient-border text-green-400 hover:text-green-300 active:scale-95'
                           : 'bg-secondary text-muted-foreground cursor-not-allowed'
                       )}
                     >

@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { Send, Paperclip, Wand2, Sparkles, Mic, MicOff } from 'lucide-react';
+import { Send, Paperclip, Wand2, Sparkles, Mic } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import Button from '@/components/ui/Button';
 import { useVoiceRecognition } from '@/lib/useVoiceRecognition';
+import { VoiceVisualizer } from '@/components/VoiceVisualizer';
 
 const suggestions = [
   'A modern SaaS landing page with dark theme',
@@ -30,17 +30,9 @@ export function PromptInput({ prompt, setPrompt, onGenerate, loading = false, di
     }
   };
 
-  const { isListening, toggleListening, transcript } = useVoiceRecognition({
-    onTranscriptChange: (text) => {
-      // Append the incoming voice text to whatever prompt was already there, separated by a space maybe?
-      // Since transcript represents the session, we should probably set prompt to text if they are speaking instead of typing,
-      // But standard approach: just overwrite or append? The hook's transcript is the full transcribed text for the session.
-      // Easiest is to overwrite current prompt with transcript if voice is active. To allow typing before speaking, 
-      // we'd have to manage it more carefully. Let's just set the prompt to the current transcript for simplicity.
-      setPrompt(text);
-    },
+  const { isListening, toggleListening } = useVoiceRecognition({
+    onTranscriptChange: (text) => setPrompt(text),
     onEnd: handleVoiceEnd,
-    continuous: false // Wait, if continuous is false, it stops after one phrase. We can set it to false for simple commands.
   });
 
   return (
@@ -96,25 +88,31 @@ export function PromptInput({ prompt, setPrompt, onGenerate, loading = false, di
                   : "text-muted-foreground hover:bg-secondary hover:text-foreground"
               )}
             >
-              <Mic className={cn("h-4 w-4", isListening && "animate-pulse")} />
-              <span className="hidden sm:inline">{isListening ? "Listening..." : "Voice"}</span>
+              {isListening ? (
+                <VoiceVisualizer isListening={isListening} />
+              ) : (
+                <>
+                  <Mic className="h-4 w-4" />
+                  <span className="hidden sm:inline">Voice</span>
+                </>
+              )}
             </button>
           </div>
 
           <button
             type="button"
-            onClick={onGenerate}
+            onClick={() => onGenerate()}
             disabled={!prompt.trim() || loading || disabled}
             className={cn(
               'flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all duration-200',
               prompt.trim() && !loading && !disabled
-                ? 'bg-primary text-primary-foreground hover:bg-primary/90 active:scale-95'
+                ? 'btn-gradient-border text-green-400 hover:text-green-300 active:scale-95'
                 : 'bg-secondary text-muted-foreground cursor-not-allowed'
             )}
           >
             {loading ? (
               <>
-                <Sparkles className="h-4 w-4 animate-pulse" />
+                <Sparkles className="h-4 w-4 animate-spin text-green-400" />
                 <span>Generating...</span>
               </>
             ) : (
@@ -123,7 +121,7 @@ export function PromptInput({ prompt, setPrompt, onGenerate, loading = false, di
                 <span>Generate</span>
                 <Send className="h-4 w-4" />
               </>
-                )}
+            )}
           </button>
         </div>
       </div>
