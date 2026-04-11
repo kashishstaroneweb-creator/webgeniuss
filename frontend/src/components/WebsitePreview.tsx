@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { X, Maximize2, Minimize2 } from 'lucide-react';
 import Button from './ui/Button';
 
@@ -30,6 +31,7 @@ interface WebsitePreviewProps {
   onClose?: () => void;
   isModal?: boolean;
   className?: string;
+  v0DemoUrl?: string;
 }
 
 // Known globals and reserved names that must never get a fallback definition
@@ -183,12 +185,13 @@ function getUsedButUndeclaredIdentifiers(
   return needsFallback.sort();
 }
 
-const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, prompt, onClose, isModal = false, className }: WebsitePreviewProps) => {
+const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, prompt, onClose, isModal = false, className, v0DemoUrl }: WebsitePreviewProps) => {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   // Function to load content into iframe (memoized with useCallback)
   const loadIframeContent = useCallback(() => {
+    if (v0DemoUrl) return; // Hosted preview handles itself
     if (iframeRef.current) {
       // Wait for iframe to be ready
       const iframe = iframeRef.current;
@@ -1181,63 +1184,42 @@ window.__PREVIEW_PARAMS__ = JSON.parse('${placeholderParamsEscaped}');
     loadIframeContent();
   }, [loadIframeContent]);
 
-  // Reload content when fullscreen mode changes
-  useEffect(() => {
-    // Small delay to ensure iframe is mounted in new location
-    const timer = setTimeout(() => {
-      loadIframeContent();
-    }, 100);
-    return () => clearTimeout(timer);
-  }, [isFullscreen, loadIframeContent]);
+  const containerRef = useRef<HTMLDivElement>(null);
 
-  const toggleFullscreen = () => {
-    setIsFullscreen(!isFullscreen);
+  // Sync isFullscreen state with native browser fullscreen state
+  useEffect(() => {
+    const handleFsChange = () => {
+      setIsFullscreen(document.fullscreenElement === containerRef.current);
+    };
+    document.addEventListener('fullscreenchange', handleFsChange);
+    return () => document.removeEventListener('fullscreenchange', handleFsChange);
+  }, []);
+
+  const toggleFullscreen = async () => {
+    if (!containerRef.current) return;
+    
+    if (!document.fullscreenElement) {
+      try {
+        await containerRef.current.requestFullscreen();
+      } catch (err) {
+        console.error('Error attempting to enable full-screen mode:', err);
+      }
+    } else {
+      document.exitFullscreen();
+    }
   };
 
-  if (isFullscreen) {
-    return (
-      <div className="fixed inset-0 z-50 bg-background flex flex-col">
-        <div className="flex items-center justify-between p-4 border-b bg-card">
-          <h2 className="text-lg font-semibold">{websiteName || 'Website Preview'}</h2>
-          <div className="flex gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={toggleFullscreen}
-              className="gap-2"
-            >
-              <Minimize2 className="h-4 w-4" />
-              Exit Fullscreen
-            </Button>
-            {onClose && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={onClose}
-                className="gap-2"
-              >
-                <X className="h-4 w-4" />
-                Close
-              </Button>
-            )}
-          </div>
-        </div>
-        <iframe
-          ref={iframeRef}
-          className="flex-1 w-full border-0"
-          title="Website Preview"
-          sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-          onLoad={loadIframeContent}
-        />
-      </div>
-    );
-  }
+  // Re-render iframe content ONLY when code changes, and NOT when toggling fullscreen
+  // (the native API keeps the iframe alive)
 
   if (isModal) {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-        <div className="bg-card rounded-lg shadow-xl w-full max-w-6xl h-[90vh] flex flex-col m-4">
-          <div className="flex items-center justify-between p-4 border-b">
+        <div 
+          ref={containerRef}
+          className="bg-card rounded-lg shadow-xl w-full max-w-6xl h-[90vh] flex flex-col m-4 overflow-hidden relative"
+        >
+          <div className="flex items-center justify-between p-4 border-b bg-card/50 backdrop-blur-md z-10">
             <h2 className="text-lg font-semibold">{websiteName || 'Website Preview'}</h2>
             <div className="flex gap-2">
               <Button
@@ -1246,8 +1228,8 @@ window.__PREVIEW_PARAMS__ = JSON.parse('${placeholderParamsEscaped}');
                 onClick={toggleFullscreen}
                 className="gap-2"
               >
-                <Maximize2 className="h-4 w-4" />
-                Fullscreen
+                {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+                {isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
               </Button>
               {onClose && (
                 <Button
@@ -1264,7 +1246,7 @@ window.__PREVIEW_PARAMS__ = JSON.parse('${placeholderParamsEscaped}');
           </div>
           <iframe
             ref={iframeRef}
-            className="flex-1 w-full border-0 rounded-b-lg"
+            className="flex-1 w-full border-0"
             title="Website Preview"
             sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
             onLoad={loadIframeContent}
@@ -1275,36 +1257,41 @@ window.__PREVIEW_PARAMS__ = JSON.parse('${placeholderParamsEscaped}');
   }
 
   return (
-    <div className={`border rounded-lg overflow-hidden bg-card flex flex-col ${className || ''}`}>
-      <div className="flex items-center justify-between p-3 border-b bg-muted/50 flex-shrink-0">
+    <div 
+      ref={containerRef}
+      className={`border rounded-xl overflow-hidden glass-panel flex flex-col h-full w-full relative ${className || ''} ${isFullscreen ? 'p-4' : ''}`}
+    >
+      <div className="flex items-center justify-between p-3 border-b border-border/50 bg-muted/30 backdrop-blur-sm flex-shrink-0 z-10">
         <h3 className="text-sm font-medium">{websiteName || 'Preview'}</h3>
         <div className="flex gap-2">
           <Button
             variant="ghost"
             size="sm"
             onClick={toggleFullscreen}
-            className="h-7 px-2"
+            className="h-7 px-2 hover:bg-white/10"
           >
-            <Maximize2 className="h-3 w-3" />
+            {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-3 w-3" />}
           </Button>
           {onClose && (
             <Button
               variant="ghost"
               size="sm"
               onClick={onClose}
-              className="h-7 px-2"
+              className="h-7 px-2 hover:bg-white/10"
             >
               <X className="h-3 w-3" />
             </Button>
           )}
         </div>
       </div>
-      <div className="relative flex-1 min-h-0">
+      <div className="relative flex-1 min-h-0 bg-white">
         <iframe
           ref={iframeRef}
+          src={v0DemoUrl || undefined}
           className="w-full h-full border-0"
           title="Website Preview"
-          sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+          sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
+          allowFullScreen
           onLoad={loadIframeContent}
         />
       </div>

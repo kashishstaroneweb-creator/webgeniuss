@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
 import { useAuthStore } from '@/store/authStore';
 import { useSidebarStore } from '@/store/sidebarStore';
@@ -1379,69 +1380,18 @@ const Dashboard = () => {
                         )}
                       </div>
                     ) : (
-                      // Preview: v0 hosted iframe when available; otherwise client-side WebsitePreview (DB payload — no server disk build)
                       <div className="flex-1 overflow-auto h-full flex flex-col min-h-[600px] min-w-0">
-                        {generatedWebsite?.v0DemoUrl ? (
-                          <>
-                            {realPreviewFullscreen ? (
-                              <div className="fixed inset-0 z-50 bg-background flex flex-col">
-                                <div className="flex items-center justify-between p-4 border-b bg-card flex-shrink-0">
-                                  <h2 className="text-lg font-semibold">
-                                    {generatedWebsite.websiteName || 'Preview'} hosted by Webgenius
-                                  </h2>
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() => setRealPreviewFullscreen(false)}
-                                    className="gap-2"
-                                  >
-                                    <Minimize2 className="h-4 w-4" />
-                                    Exit Fullscreen
-                                  </Button>
-                                </div>
-                                <iframe
-                                  src={generatedWebsite.v0DemoUrl}
-                                  title="v0 hosted preview"
-                                  className="flex-1 w-full border-0 min-h-0"
-                                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
-                                />
-                              </div>
-                            ) : (
-                              <div className="border rounded-lg overflow-hidden bg-card flex flex-col flex-1 min-h-[600px]">
-                                <div className="flex items-center justify-between p-3 border-b bg-muted/50 flex-shrink-0">
-                                  <div>
-                                    <h3 className="text-sm font-medium">{generatedWebsite.websiteName || 'Preview'}</h3>                          
-                                  </div>
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() => setRealPreviewFullscreen(true)}
-                                    className="h-7 px-2"
-                                  >
-                                    <Maximize2 className="h-3 w-3" />
-                                  </Button>
-                                </div>
-                                <iframe
-                                  src={generatedWebsite.v0DemoUrl}
-                                  title="v0 hosted preview"
-                                  className="w-full flex-1 min-h-[500px] border-0"
-                                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
-                                />
-                              </div>
-                            )}
-                          </>
-                        ) : (
-                          <WebsitePreview
-                            html={generatedWebsite.htmlCode}
-                            css={generatedWebsite.cssCode}
-                            js={generatedWebsite.jsCode}
-                            components={generatedWebsite.components}
-                            viteConfig={generatedWebsite.viteConfig}
-                            websiteName={generatedWebsite.websiteName}
-                            prompt={generatedWebsite.prompt}
-                            className="h-full min-h-[600px]"
-                          />
-                        )}
+                        <WebsitePreview
+                          html={generatedWebsite.htmlCode}
+                          css={generatedWebsite.cssCode}
+                          js={generatedWebsite.jsCode}
+                          components={generatedWebsite.components}
+                          viteConfig={generatedWebsite.viteConfig}
+                          websiteName={generatedWebsite.websiteName}
+                          v0DemoUrl={generatedWebsite.v0DemoUrl}
+                          prompt={generatedWebsite.prompt}
+                          className="h-full min-h-[600px]"
+                        />
                       </div>
                     )}
                   </div>

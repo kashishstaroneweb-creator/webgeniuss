@@ -34,7 +34,7 @@ export function GeneratingLoader({ title, subtitle, variant = 'generating' }: Ge
     subtitle ??
     (variant === 'building'
       ? 'Running npm install & vite build'
-      : 'v0 is generating your website');
+      : 'WebGenius is generating your website');
 
   return (
     <div className="relative flex h-full w-full flex-col overflow-hidden rounded-xl border border-border/50 bg-background">
