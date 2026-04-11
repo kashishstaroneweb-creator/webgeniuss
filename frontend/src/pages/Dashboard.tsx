@@ -5,13 +5,15 @@ import { useSidebarStore } from '@/store/sidebarStore';
 import api from '@/lib/api';
 import Button from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Sparkles, Send, Eye, Code, Monitor, Download, Maximize2, Minimize2, Paperclip, Wand2 } from 'lucide-react';
+import { Sparkles, Send, Eye, Code, Monitor, Download, Maximize2, Minimize2, Paperclip, Wand2, Mic, MicOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import WebsitePreview from '@/components/WebsitePreview';
 import { GeneratingLoader } from '@/components/GeneratingLoader';
 import { PromptInput } from '@/components/PromptInput';
 import { StatsCards } from '@/components/StatsCards';
 import { RecentProjects } from '@/components/RecentProjects';
+import { useVoiceRecognition } from '@/lib/useVoiceRecognition';
+import { useVoiceSynthesis } from '@/lib/useVoiceSynthesis';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import JSZip from 'jszip';
@@ -100,6 +102,21 @@ const Dashboard = () => {
   /** Add-on prompt for editing the current website in the same chat */
   const [addOnPrompt, setAddOnPrompt] = useState('');
   const [editLoading, setEditLoading] = useState(false);
+
+  const voice = useVoiceSynthesis();
+
+  const handleVoiceEditEnd = (finalTranscript: string) => {
+    const trimmed = finalTranscript.trim();
+    if (trimmed && !editLoading && !loading) {
+      handleEdit(trimmed);
+    }
+  };
+
+  const { isListening: isEditListening, toggleListening: toggleEditListening, transcript: editTranscript } = useVoiceRecognition({
+    onTranscriptChange: (text) => setAddOnPrompt(text),
+    onEnd: handleVoiceEditEnd,
+    continuous: false
+  });
 
   generatedWebsiteRef.current = generatedWebsite;
 
@@ -290,8 +307,9 @@ const Dashboard = () => {
     return formatted;
   };
 
-  const handleGenerate = async () => {
-    if (!prompt.trim()) {
+  const handleGenerate = async (overridePrompt?: string) => {
+    const finalPrompt = overridePrompt || prompt;
+    if (!finalPrompt.trim()) {
       alert('Please enter a prompt');
       return;
     }
@@ -301,6 +319,10 @@ const Dashboard = () => {
     setGeneratedWebsite(null);
     setShowCodeView(false);
     setActiveTab('html');
+    
+    // Announce start of generation
+    voice.speak("I'm on it. Generating your website now.");
+    
     try {
       // Check if token exists
       const token = localStorage.getItem('token');
@@ -311,7 +333,7 @@ const Dashboard = () => {
       }
 
       console.log('Making website generation request...', {
-        prompt: prompt.substring(0, 50) + '...',
+        prompt: finalPrompt.substring(0, 50) + '...',
         websiteName,
         tokenLength: token.length
       });
@@ -326,7 +348,7 @@ const Dashboard = () => {
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          prompt,
+          prompt: finalPrompt,
           websiteName: websiteNameFinal,
           ...(currentUserId && { userId: currentUserId }),
         }),
@@ -390,6 +412,9 @@ const Dashboard = () => {
       }
 
       console.log('Website generated successfully!', saved);
+      
+      voice.speak("Your website is ready.");
+      
       console.log('Code lengths:', {
         html: saved.htmlCode?.length || 0,
         css: saved.cssCode?.length || 0,
@@ -436,8 +461,9 @@ const Dashboard = () => {
     }
   };
 
-  const handleEdit = async () => {
-    if (!generatedWebsite?.id || !addOnPrompt.trim()) return;
+  const handleEdit = async (overridePrompt?: string) => {
+    const finalPrompt = overridePrompt || addOnPrompt;
+    if (!generatedWebsite?.id || !finalPrompt.trim()) return;
     setEditLoading(true);
     const token = localStorage.getItem('token');
     if (!token) {
@@ -448,13 +474,15 @@ const Dashboard = () => {
     }
 
     const websiteId = generatedWebsite.id;
-    const editPrompt = addOnPrompt.trim();
+    const editPrompt = finalPrompt.trim();
     const applySaved = (saved: GeneratedWebsite) => {
       const nextId = saved.id || websiteId;
       setGeneratedWebsite({ ...saved, id: nextId });
       setAddOnPrompt('');
       if (nextId) syncWebsiteIdToUrl(nextId);
     };
+
+    voice.speak("Got it, applying your changes.");
 
     try {
       const streamRes = await fetch(`${STREAM_API_BASE}/website/${websiteId}/edit-stream`, {
@@ -518,6 +546,7 @@ const Dashboard = () => {
       if (!saved) {
         throw new Error('Edit stream ended without saving. Try again or use a smaller change.');
       }
+      voice.speak("Changes applied successfully.");
       applySaved(saved);
     } catch (error: any) {
       const isTimeout =
@@ -749,6 +778,20 @@ const Dashboard = () => {
                       >
                         <Wand2 className="h-4 w-4" />
                         <span className="hidden sm:inline">Templates</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={toggleEditListening}
+                        disabled={editLoading || loading}
+                        className={cn(
+                          "flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-all duration-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed",
+                          isEditListening 
+                            ? "bg-red-500/10 text-red-500 hover:bg-red-500/20" 
+                            : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+                        )}
+                      >
+                        {isEditListening ? <Mic className="h-4 w-4 animate-pulse" /> : <Mic className="h-4 w-4" />}
+                        <span className="hidden sm:inline">{isEditListening ? "Listening..." : "Voice"}</span>
                       </button>
                     </div>
                     <button

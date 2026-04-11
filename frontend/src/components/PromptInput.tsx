@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { Send, Paperclip, Wand2, Sparkles } from 'lucide-react';
+import { Send, Paperclip, Wand2, Sparkles, Mic, MicOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import Button from '@/components/ui/Button';
+import { useVoiceRecognition } from '@/lib/useVoiceRecognition';
 
 const suggestions = [
   'A modern SaaS landing page with dark theme',
@@ -13,13 +14,34 @@ const suggestions = [
 interface PromptInputProps {
   prompt: string;
   setPrompt: (value: string) => void;
-  onGenerate: () => void;
+  onGenerate: (overridePrompt?: string) => void;
   loading?: boolean;
   disabled?: boolean;
 }
 
 export function PromptInput({ prompt, setPrompt, onGenerate, loading = false, disabled = false }: PromptInputProps) {
   const [isFocused, setIsFocused] = useState(false);
+
+  const handleVoiceEnd = (finalTranscript: string) => {
+    // When Voice recognition ends, if we have text we auto-generate
+    const trimmed = finalTranscript.trim();
+    if (trimmed && !loading && !disabled) {
+      onGenerate(trimmed);
+    }
+  };
+
+  const { isListening, toggleListening, transcript } = useVoiceRecognition({
+    onTranscriptChange: (text) => {
+      // Append the incoming voice text to whatever prompt was already there, separated by a space maybe?
+      // Since transcript represents the session, we should probably set prompt to text if they are speaking instead of typing,
+      // But standard approach: just overwrite or append? The hook's transcript is the full transcribed text for the session.
+      // Easiest is to overwrite current prompt with transcript if voice is active. To allow typing before speaking, 
+      // we'd have to manage it more carefully. Let's just set the prompt to the current transcript for simplicity.
+      setPrompt(text);
+    },
+    onEnd: handleVoiceEnd,
+    continuous: false // Wait, if continuous is false, it stops after one phrase. We can set it to false for simple commands.
+  });
 
   return (
     <div className="w-full max-w-3xl mx-auto">
@@ -62,6 +84,20 @@ export function PromptInput({ prompt, setPrompt, onGenerate, loading = false, di
             >
               <Wand2 className="h-4 w-4" />
               <span className="hidden sm:inline">Templates</span>
+            </button>
+            <button
+              type="button"
+              onClick={toggleListening}
+              disabled={disabled || loading}
+              className={cn(
+                "flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-all duration-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed",
+                isListening 
+                  ? "bg-red-500/10 text-red-500 hover:bg-red-500/20" 
+                  : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+              )}
+            >
+              <Mic className={cn("h-4 w-4", isListening && "animate-pulse")} />
+              <span className="hidden sm:inline">{isListening ? "Listening..." : "Voice"}</span>
             </button>
           </div>
 
