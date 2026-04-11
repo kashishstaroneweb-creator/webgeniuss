@@ -58,9 +58,9 @@
     --accent-foreground: oklch(0.09 0.005 260);
     --destructive: oklch(0.55 0.2 25);
     --destructive-foreground: oklch(0.98 0 0);
-    --border: oklch(0.22 0.01 260);
-    --input: oklch(0.15 0.008 260);
-    --ring: oklch(0.65 0.15 145);
+    --border: oklch(0.22 0.01 260); /* Keep base low */
+    --input: rgba(10, 15, 10, 0.5);
+    --ring: oklch(0.65 0.2 145); /* green */
     --chart-1: oklch(0.65 0.15 145);
     --chart-2: oklch(0.6 0.15 200);
     --chart-3: oklch(0.7 0.12 80);
@@ -99,8 +99,21 @@
     font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    overflow: hidden;
   }
-  
+
+  /* Hide all scrollbars globally while keeping scroll functionality */
+  *::-webkit-scrollbar {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+  }
+
+  * {
+    scrollbar-width: none !important;
+    -ms-overflow-style: none !important;
+  }
+
   /* Ensure accent color is properly applied */
   .text-accent {
     color: var(--accent) !important;
@@ -147,4 +160,62 @@
   .min-w-screen {
     min-width: calc(100vw / var(--site-zoom, 1)) !important;
   }
+
+  .animation-delay-2000 {
+    animation-delay: 2s;
+  }
+  .animation-delay-4000 {
+    animation-delay: 4s;
+  }
+
+  .glass-panel {
+    background: rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border: 1px solid rgba(34, 197, 94, 0.15); /* subtle green border */
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.5);
+  }
+
+  .glass-card {
+    background: rgba(10, 15, 10, 0.4); /* slight green tint */
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(34, 197, 94, 0.2);
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+    transition: all 0.3s ease;
+  }
+
+  .glass-card:hover {
+    background: rgba(15, 25, 15, 0.5);
+    border: 1px solid rgba(34, 197, 94, 0.4);
+    box-shadow: 0 12px 40px 0 rgba(34, 197, 94, 0.1);
+  }
+
+  @keyframes blob {
+    0% {
+      transform: translate(0px, 0px) scale(1);
+    }
+    33% {
+      transform: translate(30px, -50px) scale(1.1);
+    }
+    66% {
+      transform: translate(-20px, 20px) scale(0.9);
+    }
+    100% {
+      transform: translate(0px, 0px) scale(1);
+    }
+  }
+
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
+  .animate-blob {
+    animation: blob 8s infinite alternate ease-in-out;
+  }
 }
+

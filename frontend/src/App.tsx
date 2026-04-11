@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate, useSearchParams } from 'react-r
 import { useAuthStore } from '@/store/authStore';
 import { AppSidebar } from '@/components/AppSidebar';
 import { AppHeader } from '@/components/AppHeader';
+import { AuroraBackground } from '@/components/AuroraBackground';
 import Login from '@/pages/Login';
 import ForgotPassword from '@/pages/ForgotPassword';
 import Dashboard from '@/pages/Dashboard';
@@ -49,15 +50,18 @@ const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
 
 const Layout = ({ children }: { children: React.ReactNode }) => {
   return (
-    <div className="flex h-screen bg-background">
+    <>
+      <AuroraBackground />
+      <div className="flex h-screen bg-transparent relative z-10 text-foreground p-4 gap-4">
       <AppSidebar />
-      <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="flex flex-1 flex-col overflow-hidden gap-4">
         <AppHeader />
-        <main className="flex-1 overflow-y-auto">
+        <main className="flex-1 overflow-y-auto rounded-3xl glass-panel relative scrollbar-hide">
           {children}
         </main>
       </div>
     </div>
+    </>
   );
 };
 

@@ -7,7 +7,7 @@ export function AppHeader() {
   const { user } = useAuthStore();
 
   return (
-    <header className="flex h-16 items-center justify-between border-b border-border bg-background/50 px-6 backdrop-blur-sm">
+    <header className="flex h-16 items-center justify-between border border-border/50 glass-panel px-6 rounded-3xl shrink-0">
       {/* Search */}
       <div className="flex flex-1 items-center gap-4">
         <div className="relative max-w-md flex-1">

@@ -89,29 +89,31 @@ export function AppSidebar() {
   return (
     <aside
       className={cn(
-        'flex h-screen flex-col border-r border-sidebar-border bg-sidebar transition-all duration-300',
+        'flex h-full flex-col border border-border/50 glass-panel transition-all duration-300 rounded-3xl overflow-hidden',
         isCollapsed ? 'w-16' : 'w-64'
       )}
     >
       {/* Logo */}
-      <div className="flex h-16 items-center justify-between border-b border-sidebar-border px-4">
-        <Link
-          to="/dashboard"
-          className="flex items-center gap-2"
-          title={isCollapsed ? 'WebGenius' : undefined}
-        >
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent">
-            <Sparkles className="h-4 w-4 text-accent-foreground" />
-          </div>
-          {!isCollapsed && (
+      <div className={cn("flex h-16 items-center border-b border-sidebar-border transition-all duration-300", isCollapsed ? "justify-center px-0" : "justify-between px-4")}>
+        {!isCollapsed && (
+          <Link
+            to="/dashboard"
+            className="flex items-center gap-2"
+          >
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent">
+              <Sparkles className="h-4 w-4 text-accent-foreground" />
+            </div>
             <span className="font-semibold text-sidebar-foreground">WebGenius</span>
-          )}
-        </Link>
+          </Link>
+        )}
         <button
           type="button"
           onClick={toggle}
           title={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          className="rounded-md p-1.5 text-muted-foreground transition-all duration-200 hover:bg-sidebar-accent hover:text-sidebar-foreground active:scale-95"
+          className={cn(
+            "rounded-md p-1.5 text-muted-foreground transition-all duration-200 hover:bg-sidebar-accent hover:text-sidebar-foreground active:scale-95",
+            isCollapsed && "bg-sidebar-accent text-sidebar-foreground"
+          )}
         >
           <ChevronLeft
             className={cn(

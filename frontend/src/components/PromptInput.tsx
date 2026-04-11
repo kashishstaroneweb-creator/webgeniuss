@@ -48,8 +48,8 @@ export function PromptInput({ prompt, setPrompt, onGenerate, loading = false, di
       {/* Main Input Card */}
       <div
         className={cn(
-          'relative rounded-2xl border bg-card p-1 transition-all duration-300',
-          isFocused ? 'border-accent shadow-lg shadow-accent/10' : 'border-border'
+          'relative rounded-[24px] border glass-card p-1 transition-all duration-300',
+          isFocused ? 'border-accent shadow-lg shadow-accent/10' : 'border-border/50'
         )}
       >
         {/* Textarea */}
@@ -136,7 +136,7 @@ export function PromptInput({ prompt, setPrompt, onGenerate, loading = false, di
               key={suggestion}
               type="button"
               onClick={() => setPrompt(suggestion)}
-              className="rounded-full border border-border bg-card/50 px-4 py-2 text-sm text-muted-foreground transition-all duration-200 hover:border-accent/50 hover:bg-card hover:text-foreground active:scale-95"
+              className="rounded-full border border-border/50 glass-panel px-4 py-2 text-sm text-muted-foreground transition-all duration-200 hover:border-accent/50 hover:bg-background/20 hover:text-foreground active:scale-95"
             >
               {suggestion}
             </button>
