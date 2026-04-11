@@ -1,5 +1,6 @@
 import { motion } from 'framer-motion';
 import { ExternalLink, Monitor, RefreshCw, Smartphone } from 'lucide-react';
+import { useEffect, useRef } from 'react';
 
 function SkeletonBlock({ className }: { className?: string }) {
   return (
@@ -16,6 +17,17 @@ export function LoaderPreviewPanel({ progress }: { progress: number }) {
   const showHero = progress > 25;
   const showFeatures = progress > 50;
   const showFooter = progress > 75;
+
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (containerRef.current) {
+      containerRef.current.scrollTo({
+        top: containerRef.current.scrollHeight,
+        behavior: 'smooth',
+      });
+    }
+  }, [showNav, showHero, showFeatures, showFooter]);
 
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-lg border border-border/50 bg-card/30 backdrop-blur-sm">
@@ -41,7 +53,7 @@ export function LoaderPreviewPanel({ progress }: { progress: number }) {
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto bg-background/80 p-4">
+      <div ref={containerRef} className="flex-1 overflow-auto bg-background/80 p-4 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
         <div className="mx-auto max-w-md space-y-4">
           {showNav ? (
             <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="flex items-center justify-between rounded-lg bg-card/50 p-3">

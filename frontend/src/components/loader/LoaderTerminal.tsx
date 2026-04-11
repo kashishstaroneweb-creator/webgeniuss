@@ -52,7 +52,10 @@ export function LoaderTerminal({ progress, variant }: { progress: number; varian
 
   useEffect(() => {
     if (containerRef.current) {
-      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+      containerRef.current.scrollTo({
+        top: containerRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
     }
   }, [logs]);
 
@@ -79,7 +82,7 @@ export function LoaderTerminal({ progress, variant }: { progress: number; varian
         <span className="ml-auto text-xs text-muted-foreground">bash</span>
       </div>
 
-      <div ref={containerRef} className="flex-1 overflow-auto p-3 font-mono text-xs">
+      <div ref={containerRef} className="flex-1 overflow-auto p-3 font-mono text-xs [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
         <div className="mb-2 flex items-center gap-2 text-muted-foreground">
           <ChevronRight className="h-3 w-3 text-green-400" />
           <span className="text-green-400">~</span>

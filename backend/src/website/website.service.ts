@@ -117,31 +117,41 @@ Required JSON structure:
       "path": "src/components/Hero.jsx",
       "code": "import React from 'react';\\n\\nexport default function Hero() {\\n  return (\\n    <section className=\\\"hero\\\">\\n      <h1>Welcome</h1>\\n    </section>\\n  );\\n}",
       "language": "jsx"
+    },
+    {
+      "name": "Home",
+      "type": "page",
+      "path": "src/pages/Home.jsx",
+      "code": "import React from 'react';\\nimport Header from '../components/Header.jsx';\\nimport Hero from '../components/Hero.jsx';\\n\\nexport default function Home() {\\n  return (\\n    <>\\n      <Header />\\n      <Hero />\\n    </>\\n  );\\n}",
+      "language": "jsx"
     }
   ],
   "viteConfig": {
-    "packageJson": "{ \\\"name\\\": \\\"website-name\\\", \\\"version\\\": \\\"1.0.0\\\", \\\"scripts\\\": { \\\"dev\\\": \\\"vite\\\", \\\"build\\\": \\\"vite build\\\" }, \\\"dependencies\\\": { \\\"react\\\": \\\"^18.2.0\\\", \\\"react-dom\\\": \\\"^18.2.0\\\" }, \\\"devDependencies\\\": { \\\"vite\\\": \\\"^4.0.0\\\", \\\"@vitejs/plugin-react\\\": \\\"^3.0.0\\\" } }",
+    "packageJson": "{ \\\"name\\\": \\\"website-name\\\", \\\"version\\\": \\\"1.0.0\\\", \\\"scripts\\\": { \\\"dev\\\": \\\"vite\\\", \\\"build\\\": \\\"vite build\\\" }, \\\"dependencies\\\": { \\\"react\\\": \\\"^18.2.0\\\", \\\"react-dom\\\": \\\"^18.2.0\\\", \\\"react-router-dom\\\": \\\"^6.20.0\\\" }, \\\"devDependencies\\\": { \\\"vite\\\": \\\"^4.0.0\\\", \\\"@vitejs/plugin-react\\\": \\\"^3.0.0\\\" } }",
     "viteConfig": "import { defineConfig } from 'vite';\\nimport react from '@vitejs/plugin-react';\\n\\nexport default defineConfig({\\n  plugins: [react()],\\n});",
     "indexHtml": "<!DOCTYPE html>\\n<html lang=\\\"en\\\">\\n<head>\\n  <meta charset=\\\"UTF-8\\\">\\n  <meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1.0\\\">\\n  <title>Website Name</title>\\n</head>\\n<body>\\n  <div id=\\\"root\\\"></div>\\n  <script type=\\\"module\\\" src=\\\"/src/main.jsx\\\"></script>\\n</body>\\n</html>",
-    "mainJsx": "import React from 'react';\\nimport ReactDOM from 'react-dom/client';\\nimport './style.css';\\nimport Header from './components/Header.jsx';\\nimport Hero from './components/Hero.jsx';\\n\\nfunction App() {\\n  return (\\n    <>\\n      <Header />\\n      <Hero />\\n    </>\\n  );\\n}\\n\\nReactDOM.createRoot(document.getElementById('root')).render(<App />);",
+    "mainJsx": "import React from 'react';\\nimport ReactDOM from 'react-dom/client';\\nimport { BrowserRouter, Routes, Route } from 'react-router-dom';\\nimport './style.css';\\nimport Home from './pages/Home.jsx';\\n\\nfunction App() {\\n  return (\\n    <BrowserRouter>\\n      <Routes>\\n        <Route path=\\\"/\\\" element={<Home />} />\\n      </Routes>\\n    </BrowserRouter>\\n  );\\n}\\n\\nReactDOM.createRoot(document.getElementById('root')).render(<App />);",
     "styleCss": "/* CSS styles */"
   }
 }
 
 CRITICAL: The mainJsx MUST include:
 1. Import React and ReactDOM
-2. Import './style.css'
-3. Import ALL components from './components/ComponentName.jsx'
-4. Define an App function component that returns all components wrapped in <>...</>
-5. Call ReactDOM.createRoot(document.getElementById('root')).render(<App />)
+2. Import BrowserRouter, Routes, Route from 'react-router-dom'
+3. Import './style.css'
+4. Import ALL page components from './pages/PageName.jsx'
+5. Define an App function component that returns a BrowserRouter containing Routes and all Pages
+6. Call ReactDOM.createRoot(document.getElementById('root')).render(<App />)
 
 COMPONENT ARCHITECTURE REQUIREMENTS:
-- Break down the UI into logical, reusable React functional components (Header, Hero, Services, About, Contact, Footer, etc.)
-- Each component should be a self-contained React functional component in src/components/
-- Components MUST use React functional component syntax with JSX
+- You MUST create a MULTI-PAGE APPLICATION (MPA) using react-router-dom.
+- Break down the UI into logical, reusable React functional components (Header, Hero, Services, Footer, etc.) in src/components/
+- Create separate Page components (Home, About, Contact, etc.) in src/pages/
+- Components and Pages MUST use React functional component syntax with JSX
+- Use Link from react-router-dom for all navigation between pages
 - Use semantic HTML5 elements in JSX
 - Components should accept props for customization
-- Separate concerns: one component per file
+- Separate concerns: one component/page per file
 - Use React hooks (useState, useEffect) when needed for interactivity
 
 JSX ATTRIBUTES - NO TEMPLATE LITERALS:
@@ -168,27 +178,27 @@ The mainJsx MUST include an App component. Follow this EXACT pattern:
 \`\`\`javascript
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import './style.css';
-import Header from './components/Header.jsx';
-import Hero from './components/Hero.jsx';
-import Services from './components/Services.jsx';
-// ... import all other components
+import Home from './pages/Home.jsx';
+import About from './pages/About.jsx';
 
 function App() {
   return (
-    <>
-      <Header />
-      <Hero />
-      <Services />
-      {/* ... all other components */}
-    </>
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<Home />} />
+        <Route path="/about" element={<About />} />
+        {/* ... all other page routes */}
+      </Routes>
+    </BrowserRouter>
   );
 }
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App />);
 \`\`\`
 
-CRITICAL: The App component MUST be defined as a function that returns all components. DO NOT skip the App component.
+CRITICAL: The App component MUST be defined as a function that returns the routing setup. DO NOT skip the App component.
 
 COMPONENT PATTERN:
 Each component MUST be a React functional component with JSX syntax. Follow this EXACT pattern:
@@ -257,24 +267,23 @@ FUNCTIONALITY REQUIREMENTS:
 TECHNICAL REQUIREMENTS:
 - Vite: Use Vite with React plugin (@vitejs/plugin-react)
 - React: Use React 18+ with functional components and hooks
-- Components: Each component as separate .jsx file with React functional component
+- Router: ALWAYS use react-router-dom 6+ for navigation
+- Components: Each component/page as separate .jsx file with React functional component
 - HTML: Semantic HTML5, proper meta tags in index.html
 - CSS: Custom Properties (variables), Grid, Flexbox, @media queries, @keyframes, Google Fonts
 - JavaScript: ES6+ modules, JSX syntax, React hooks (useState, useEffect), event handling
 - Responsive breakpoints: mobile (<768px), tablet (768-1024px), desktop (>1024px)
 - Cross-browser compatible
-- Dependencies: React, ReactDOM, Vite, @vitejs/plugin-react
+- Dependencies: React, ReactDOM, react-router-dom, Vite, @vitejs/plugin-react
 
 COMPONENT BREAKDOWN GUIDELINES:
-- Header/Navbar → Header component
-- Hero section → Hero component
-- Services/Features → Services component (can have sub-components)
-- About section → About component
-- Contact form → Contact component
-- Footer → Footer component
+- Layouts/Structural → Header, Footer, Navbar in src/components/
+- Features → Hero, Services, Contact Form in src/components/
+- Pages → Home, About, Dashboard in src/pages/
 - Utility functions → utils/ folder
-- Each component should be 50-200 lines of code
+- Each file should be 50-200 lines of code
 - Components should be composable and reusable
+- Pages should compose multiple components to build the view
 
 RETURN FORMAT:
 - Return ONLY the raw JSON object with components array and viteConfig object

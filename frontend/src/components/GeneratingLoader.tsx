@@ -37,7 +37,7 @@ export function GeneratingLoader({ title, subtitle, variant = 'generating' }: Ge
       : 'v0 is generating your website');
 
   return (
-    <div className="relative min-h-[480px] w-full overflow-hidden rounded-xl border border-border/50 bg-background">
+    <div className="relative flex h-full w-full flex-col overflow-hidden rounded-xl border border-border/50 bg-background">
       <div
         className="absolute inset-0 opacity-[0.02]"
         style={{
@@ -49,9 +49,9 @@ export function GeneratingLoader({ title, subtitle, variant = 'generating' }: Ge
       <div className="absolute -left-40 -top-40 h-80 w-80 rounded-full bg-primary/10 blur-[100px]" />
       <div className="absolute -bottom-40 -right-40 h-80 w-80 rounded-full bg-accent/10 blur-[100px]" />
 
-      <div className="relative z-10 flex h-full min-h-[480px] flex-col">
-        <header className="border-b border-border/50 bg-card/30 backdrop-blur-sm">
-          <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
+      <div className="relative z-10 flex h-full flex-col overflow-hidden">
+        <header className="shrink-0 border-b border-border/50 bg-card/30 backdrop-blur-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 shrink-0">
             <div className="flex items-center gap-3">
               <motion.div
                 className="flex items-center gap-2 rounded-full border border-primary/50 bg-primary/10 px-3 py-1.5"
@@ -87,7 +87,7 @@ export function GeneratingLoader({ title, subtitle, variant = 'generating' }: Ge
           </div>
         </header>
 
-        <div className="flex flex-1 overflow-hidden">
+        <div className="flex flex-1 overflow-hidden min-h-0">
           <motion.div
             className="hidden w-56 shrink-0 border-r border-border/50 md:block"
             initial={{ x: -20, opacity: 0 }}
@@ -97,7 +97,7 @@ export function GeneratingLoader({ title, subtitle, variant = 'generating' }: Ge
             <LoaderFileTree progress={progress} />
           </motion.div>
 
-          <div className="flex flex-1 flex-col overflow-hidden lg:flex-row">
+          <div className="flex flex-1 flex-col overflow-hidden lg:flex-row min-h-0">
             <motion.div
               className="flex-1 p-3"
               initial={{ y: 20, opacity: 0 }}
@@ -108,23 +108,23 @@ export function GeneratingLoader({ title, subtitle, variant = 'generating' }: Ge
             </motion.div>
 
             <motion.div
-              className="flex w-full flex-col gap-3 p-3 lg:w-96"
+              className="flex w-full flex-col gap-3 p-3 lg:w-96 min-h-0 overflow-hidden"
               initial={{ x: 20, opacity: 0 }}
               animate={{ x: 0, opacity: 1 }}
               transition={{ delay: 0.4 }}
             >
-              <div className="flex-1 min-h-[200px]">
+              <div className="flex-[3] min-h-0 overflow-hidden">
                 <LoaderPreviewPanel progress={progress} />
               </div>
 
-              <div className="h-48 shrink-0">
+              <div className="flex-[2] min-h-0 overflow-hidden">
                 <LoaderTerminal progress={progress} variant={variant} />
               </div>
             </motion.div>
           </div>
         </div>
 
-        <footer className="flex items-center justify-between border-t border-border/50 bg-card/30 px-4 py-2 backdrop-blur-sm">
+        <footer className="shrink-0 flex items-center justify-between border-t border-border/50 bg-card/30 px-4 py-2 backdrop-blur-sm">
           <div className="flex items-center gap-4 text-xs text-muted-foreground">
             <span className="flex items-center gap-1.5">
               <motion.div

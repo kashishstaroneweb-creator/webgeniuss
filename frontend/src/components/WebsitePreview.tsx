@@ -38,6 +38,7 @@ const PREVIEW_KNOWN_GLOBALS = new Set([
   'createElement', 'Fragment', 'StrictMode', 'Component', 'PureComponent', 'Children', 'cloneElement', 'isValidElement',
   'document', 'window', 'console', 'fetch', 'JSON', 'Object', 'Array', 'Number', 'String', 'Boolean', 'Map', 'Set', 'Promise',
   'localStorage', 'sessionStorage',
+  'BrowserRouter', 'Routes', 'Route', 'Link', 'NavLink', 'useNavigate', 'useLocation', 'useParams', 'Outlet',
   'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame',
   'Symbol', 'RegExp', 'Error', 'Math', 'Date', 'parseInt', 'parseFloat', 'isNaN', 'isFinite', 'decodeURIComponent', 'encodeURIComponent',
   'true', 'false', 'null', 'undefined', 'NaN', 'Infinity',
@@ -715,6 +716,9 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
   <div id="${rootElement}"></div>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script crossorigin src="https://unpkg.com/@remix-run/router@1.14.2/dist/router.umd.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-router@6.21.1/dist/umd/react-router.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-router-dom@6.21.1/dist/umd/react-router-dom.development.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script type="text/babel" data-presets="react">
     (function() {
@@ -729,6 +733,9 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
         
         // Make React hooks available
         const { useState, useEffect, useRef, useCallback, useMemo, useContext } = React;
+        
+        // Make React Router available
+        const { BrowserRouter, Routes, Route, Link, NavLink, useNavigate, useLocation, useParams, Outlet } = window.ReactRouterDOM || {};
         
         // Define common data variables only if user code does not declare them (avoids "already been declared" errors)
         ${escapeBackslashOnly(reactFallbackLines)}

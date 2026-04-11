@@ -90,6 +90,8 @@
   
   html {
     scroll-behavior: smooth;
+    --site-zoom: 0.8;
+    zoom: var(--site-zoom);
   }
   
   body {
@@ -132,3 +134,17 @@
   }
 }
 
+@layer utilities {
+  .h-screen {
+    height: calc(100vh / var(--site-zoom, 1)) !important;
+  }
+  .min-h-screen {
+    min-height: calc(100vh / var(--site-zoom, 1)) !important;
+  }
+  .w-screen {
+    width: calc(100vw / var(--site-zoom, 1)) !important;
+  }
+  .min-w-screen {
+    min-width: calc(100vw / var(--site-zoom, 1)) !important;
+  }
+}
