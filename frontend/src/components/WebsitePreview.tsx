@@ -39,7 +39,7 @@ const PREVIEW_KNOWN_GLOBALS = new Set([
   'React', 'ReactDOM', 'useState', 'useEffect', 'useRef', 'useCallback', 'useMemo', 'useContext', 'useReducer', 'createContext',
   'createElement', 'Fragment', 'StrictMode', 'Component', 'PureComponent', 'Children', 'cloneElement', 'isValidElement',
   'document', 'window', 'console', 'fetch', 'JSON', 'Object', 'Array', 'Number', 'String', 'Boolean', 'Map', 'Set', 'Promise',
-  'localStorage', 'sessionStorage',
+  'localStorage', 'sessionStorage', 'process',
   'BrowserRouter', 'Routes', 'Route', 'Link', 'NavLink', 'useNavigate', 'useLocation', 'useParams', 'Outlet',
   'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame',
   'Symbol', 'RegExp', 'Error', 'Math', 'Date', 'parseInt', 'parseFloat', 'isNaN', 'isFinite', 'decodeURIComponent', 'encodeURIComponent',
@@ -449,38 +449,18 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
                 processedMain = processedMain.replace(/import\s+ReactDOM\s+from\s+['"]react-dom['"];?\s*/gm, '');
                 // Pattern: import { useState } from 'react';
                 processedMain = processedMain.replace(/import\s+\{[^}]+\}\s+from\s+['"][^'"]+['"];?\s*/gm, '');
-                // Pattern: import X from '...' - if X is a component, remove; else define so App doesn't throw (fallback will define any used-but-not-declared)
-                processedMain = processedMain.replace(/import\s+(\w+)\s+from\s+['"][^'"]+['"];?\s*/gm, (_, name) => {
-                  if (isComponentName(name)) return '';
-                  return `const ${name} = [];`;
-                });
-                // Pattern: import { a, b } from '...' (named non-React imports - define so not undefined)
-                processedMain = processedMain.replace(/import\s+\{([^}]+)\}\s+from\s+['"][^'"]+['"];?\s*/gm, (_, namesStr) => {
-                  const bindings = namesStr.split(',').map((s: string) => {
-                    const t = s.trim();
-                    const asIdx = t.indexOf(' as ');
-                    return asIdx >= 0 ? t.slice(asIdx + 4).trim() : t.split(/\s+/)[0] || t;
-                  }).filter(Boolean);
-                  if (bindings.length === 0) return '';
-                  return bindings
-                    .filter((b: string) => !isComponentName(b))
-                    .map((b: string) => `const ${b} = [];`)
-                    .join(' ') + (bindings.some((b: string) => !isComponentName(b)) ? '\n' : '');
-                });
+                // Pattern: import X from '...'
+                processedMain = processedMain.replace(/import\s+(\\w+)\s+from\s+['"][^'"]+['"];?\s*/gm, '');
+                // Pattern: import { a, b } from '...'
+                processedMain = processedMain.replace(/import\s+\\{([^}]+)\\}\s+from\s+['"][^'"]+['"];?\s*/gm, '');
                 // Pattern: import * as something from '...';
-                processedMain = processedMain.replace(/import\s+\*\s+as\s+(\w+)\s+from\s+['"][^'"]+['"];?\s*/gm, (_, name) => `const ${name} = {};\n`);
+                processedMain = processedMain.replace(/import\s+\\*\s+as\s+(\\w+)\s+from\s+['"][^'"]+['"];?\s*/gm, '');
                 // Pattern: import './style.css' or any side-effect import
                 processedMain = processedMain.replace(/import\s+['"][^'"]+['"];?\s*/gm, '');
-                // Final catch-all: any remaining import (default binding) - define so variable exists
-                processedMain = processedMain.replace(/import\s+(\w+)\s+from\s+[^;]+;?\s*/gm, (match, name) => {
-                  if (isComponentName(name)) return '';
-                  return `const ${name} = [];`;
-                });
-                // Strip any leftover import line but define default binding so we don't leave refs undefined
-                processedMain = processedMain.replace(/^import\s+(\w+)\s+from\s+.*$/gm, (match, name) => {
-                  if (isComponentName(name)) return '';
-                  return `const ${name} = [];`;
-                });
+                // Final catch-all: any remaining import (default binding)
+                processedMain = processedMain.replace(/import\s+(\\w+)\s+from\s+[^;]+;?\s*/gm, '');
+                // Strip any leftover import line
+                processedMain = processedMain.replace(/^import\s+(\\w+)\s+from\s+.*$/gm, '');
                 processedMain = processedMain.replace(/^import\s+.*$/gm, '');
                 // Remove any placeholder "const ComponentName = [];" that would shadow real component declarations
                 // (avoids "Identifier 'Header' has already been declared" when componentDefinitions run)
@@ -666,9 +646,24 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
               usedButUndeclared = Array.from(usedSet);
               const reactFallbackLines = usedButUndeclared
                 .map(name => {
-                  // PascalCase names are used as components (<ProductCard />); must be a function, not []
+                  // PascalCase names are used as components (<ProductCard />) or Next.js fonts ( Inter({ subsets: [] }) );
                   if (/^[A-Z]/.test(name)) {
-                    return `if (typeof ${name} === 'undefined') { var ${name} = function ${name}() { return null; }; }`;
+                    return `if (typeof ${name} === 'undefined') { 
+                      var ${name} = new Proxy(function() {}, {
+                        get: function(target, prop) {
+                          if (prop === 'className') return '';
+                          if (prop === 'variable') return '';
+                          return target[prop];
+                        },
+                        apply: function(target, thisArg, argumentsList) {
+                          var props = argumentsList[0] || {};
+                          if (props.subsets !== undefined || props.variable !== undefined || props.weight !== undefined) {
+                            return { className: props.className || '', variable: props.variable || '', style: {} };
+                          }
+                          return props.children !== undefined ? props.children : null;
+                        }
+                      }); 
+                    }`;
                   }
                   return `if (typeof ${name} === 'undefined') { var ${name} = []; }`;
                 })
@@ -738,7 +733,11 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
         const { useState, useEffect, useRef, useCallback, useMemo, useContext } = React;
         
         // Make React Router available
-        const { BrowserRouter, Routes, Route, Link, NavLink, useNavigate, useLocation, useParams, Outlet } = window.ReactRouterDOM || {};
+        const { MemoryRouter: BrowserRouter, Routes, Route, Link, NavLink, useNavigate, useLocation, useParams, Outlet } = window.ReactRouterDOM || {};
+        
+        // Define process for Next.js/Webpack env checks
+        window.process = { env: { NODE_ENV: 'development' } };
+        const process = window.process;
         
         // Define common data variables only if user code does not declare them (avoids "already been declared" errors)
         ${escapeBackslashOnly(reactFallbackLines)}
