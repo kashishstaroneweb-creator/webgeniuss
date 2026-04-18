@@ -4,7 +4,6 @@ import { useAuthStore } from '@/store/authStore';
 import { AppSidebar } from '@/components/AppSidebar';
 import { AppHeader } from '@/components/AppHeader';
 import { AuroraBackground } from '@/components/AuroraBackground';
-import { PulseHive } from '@/components/PulseHive';
 import Login from '@/pages/Login';
 import ForgotPassword from '@/pages/ForgotPassword';
 import Dashboard from '@/pages/Dashboard';
@@ -53,7 +52,6 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
   return (
     <>
       <AuroraBackground />
-      <PulseHive />
       <div className="flex h-screen bg-transparent relative z-10 text-foreground p-4 gap-4">
       <AppSidebar />
       <div className="flex flex-1 flex-col overflow-hidden gap-4">

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Maximize2, Minimize2 } from 'lucide-react';
+import { X, Maximize2, Minimize2, RotateCw, Globe } from 'lucide-react';
 import Button from './ui/Button';
 
 interface Component {
@@ -188,6 +188,23 @@ function getUsedButUndeclaredIdentifiers(
 const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, prompt, onClose, isModal = false, className, v0DemoUrl }: WebsitePreviewProps) => {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [previewPath, setPreviewPath] = useState('/');
+
+  useEffect(() => {
+    const handleMessage = (e: MessageEvent) => {
+      if (e.data && e.data.type === 'PREVIEW_ROUTE_CHANGE') {
+        setPreviewPath(e.data.path);
+      }
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
+
+  const handleNavigate = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      iframeRef.current?.contentWindow?.postMessage({ type: 'PREVIEW_NAVIGATE', path: previewPath }, '*');
+    }
+  };
 
   // Function to load content into iframe (memoized with useCallback)
   const loadIframeContent = useCallback(() => {
@@ -733,8 +750,34 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
         const { useState, useEffect, useRef, useCallback, useMemo, useContext } = React;
         
         // Make React Router available
-        const { MemoryRouter: BrowserRouter, Routes, Route, Link, NavLink, useNavigate, useLocation, useParams, Outlet } = window.ReactRouterDOM || {};
-        
+        const ReactRouterDOM = window.ReactRouterDOM || {};
+        const { Routes, Route, Link, NavLink, useNavigate, useLocation, useParams, Outlet, MemoryRouter, RouterProvider, createMemoryRouter } = ReactRouterDOM;
+        const createBrowserRouter = createMemoryRouter;
+
+        function PreviewRouteSync() {
+          const loc = useLocation();
+          const nav = useNavigate();
+          useEffect(() => {
+            window.parent.postMessage({ type: 'PREVIEW_ROUTE_CHANGE', path: loc.pathname + loc.search + loc.hash }, '*');
+          }, [loc]);
+          useEffect(() => {
+            const handleMsg = (e) => {
+              if (e.data && e.data.type === 'PREVIEW_NAVIGATE') {
+                nav(e.data.path);
+              }
+            };
+            window.addEventListener('message', handleMsg);
+            return () => window.removeEventListener('message', handleMsg);
+          }, [nav]);
+          return null;
+        }
+
+        const BrowserRouter = function(props) {
+          return React.createElement(MemoryRouter, Object.assign({}, props), 
+            React.createElement(PreviewRouteSync, null),
+            props.children
+          );
+        };
         // Define process for Next.js/Webpack env checks
         window.process = { env: { NODE_ENV: 'development' } };
         const process = window.process;
@@ -1208,6 +1251,10 @@ window.__PREVIEW_PARAMS__ = JSON.parse('${placeholderParamsEscaped}');
     }
   };
 
+  const handleReload = () => {
+    loadIframeContent();
+  };
+
   // Re-render iframe content ONLY when code changes, and NOT when toggling fullscreen
   // (the native API keeps the iframe alive)
 
@@ -1218,9 +1265,22 @@ window.__PREVIEW_PARAMS__ = JSON.parse('${placeholderParamsEscaped}');
           ref={containerRef}
           className="bg-card rounded-lg shadow-xl w-full max-w-6xl h-[90vh] flex flex-col m-4 overflow-hidden relative"
         >
-          <div className="flex items-center justify-between p-4 border-b bg-card/50 backdrop-blur-md z-10">
-            <h2 className="text-lg font-semibold">{websiteName || 'Website Preview'}</h2>
-            <div className="flex gap-2">
+          <div className="flex items-center justify-between p-4 border-b bg-card/50 backdrop-blur-md z-10 gap-4">
+            <div className="flex items-center flex-1 max-w-xl bg-background/50 border rounded-md px-3 py-1.5 focus-within:ring-2 ring-primary/50 transition-shadow">
+              <Button variant="ghost" size="sm" onClick={handleReload} className="h-6 w-6 p-0 mr-2 rounded-full text-muted-foreground hover:text-foreground">
+                <RotateCw className="h-3.5 w-3.5" />
+              </Button>
+              <Globe className="h-4 w-4 text-muted-foreground mr-2 flex-shrink-0" />
+              <input
+                type="text"
+                value={previewPath}
+                onChange={(e) => setPreviewPath(e.target.value)}
+                onKeyDown={handleNavigate}
+                className="flex-1 bg-transparent border-none focus:outline-none text-sm text-foreground/90 font-mono"
+                spellCheck={false}
+              />
+            </div>
+            <div className="flex gap-2 flex-shrink-0">
               <Button
                 variant="ghost"
                 size="sm"
@@ -1260,9 +1320,22 @@ window.__PREVIEW_PARAMS__ = JSON.parse('${placeholderParamsEscaped}');
       ref={containerRef}
       className={`border rounded-xl overflow-hidden glass-panel flex flex-col h-full w-full relative ${className || ''} ${isFullscreen ? 'p-4' : ''}`}
     >
-      <div className="flex items-center justify-between p-3 border-b border-border/50 bg-muted/30 backdrop-blur-sm flex-shrink-0 z-10">
-        <h3 className="text-sm font-medium">{websiteName || 'Preview'}</h3>
-        <div className="flex gap-2">
+      <div className="flex items-center justify-between p-2 border-b border-border/50 bg-muted/30 backdrop-blur-sm flex-shrink-0 z-10 gap-3">
+        <div className="flex items-center flex-1 max-w-sm ml-1 bg-background/50 border rounded text-xs px-2 py-1">
+          <Button variant="ghost" size="sm" onClick={handleReload} className="h-5 w-5 p-0 mr-1.5 rounded-sm text-muted-foreground hover:text-foreground">
+            <RotateCw className="h-3 w-3" />
+          </Button>
+          <Globe className="h-3 w-3 text-muted-foreground mr-1.5 flex-shrink-0" />
+          <input
+            type="text"
+            value={previewPath}
+            onChange={(e) => setPreviewPath(e.target.value)}
+            onKeyDown={handleNavigate}
+            className="flex-1 bg-transparent border-none focus:outline-none text-muted-foreground font-mono"
+            spellCheck={false}
+          />
+        </div>
+        <div className="flex gap-1.5 flex-shrink-0">
           <Button
             variant="ghost"
             size="sm"
