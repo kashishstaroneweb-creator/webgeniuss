@@ -13,6 +13,8 @@ import type { Response } from 'express';
 import axios, { type AxiosResponse } from 'axios';
 import { CodeSanitizer } from './code-sanitizer';
 
+type WebsiteFramework = 'next' | 'react';
+
 @Injectable()
 export class WebsiteService {
   /** Official v0 Platform client — same as `import { v0 } from 'v0-sdk'` but honors `V0_API_URL` and explicit `apiKey` (default `v0` only reads `V0_API_KEY`). */
@@ -36,6 +38,10 @@ export class WebsiteService {
     }
     if (/^bearer\s+/i.test(s)) s = s.replace(/^bearer\s+/i, '').trim();
     return s || undefined;
+  }
+
+  private normalizeFramework(framework?: string): WebsiteFramework {
+    return framework === 'react' ? 'react' : 'next';
   }
 
   constructor(
@@ -95,8 +101,20 @@ export class WebsiteService {
     }
   }
 
-  /** Shared v0 system instruction for JSON-shaped React/Vite website output (used by async generate and experimental_stream). */
-  private getV0WebsiteSystemPrompt(): string {
+  /** Shared v0 system instruction (framework-aware). */
+  private getV0WebsiteSystemPrompt(framework: WebsiteFramework): string {
+    if (framework === 'next') {
+      return `You are v0, an expert AI for production-ready Next.js websites.
+
+Generate complete, modern Next.js applications using App Router patterns and real project files.
+
+Rules:
+- Return only code output artifacts (no markdown explanations).
+- Prefer App Router structure (app/layout.tsx, app/page.tsx, components/*).
+- Keep UI responsive, polished, and fully functional.
+- Use clean component architecture and modern styling.
+- Avoid placeholder stubs; return complete, runnable code.`;
+    }
     return `You are v0, an expert AI specialized in generating PRODUCTION-READY, enterprise-grade React components and websites. Your expertise is in creating stunning, modern web applications with Vite + React that look like they were built by top-tier agencies. Generate a component-based architecture following React and Vite best practices.
 
 CRITICAL: You MUST return ONLY a valid JSON object. No explanations, no markdown, no code blocks, just pure JSON starting with { and ending with }.
@@ -462,7 +480,13 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     };
   }
 
-  async generateWebsite(userId: string, prompt: string, websiteName: string) {
+  async generateWebsite(
+    userId: string,
+    prompt: string,
+    websiteName: string,
+    framework?: string,
+  ) {
+    const resolvedFramework = this.normalizeFramework(framework);
     console.log('WebsiteService.generateWebsite - Starting:', { userId, websiteName, promptLength: prompt.length });
     try {
       console.log('WebsiteService.generateWebsite - Calling v0 Platform API...');
@@ -478,9 +502,9 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
         'WebsiteService.generateWebsite - v0 chats.create: async+poll (or sync on retry). Use POST /website/generate-stream for experimental_stream + SSE.',
       );
 
-      const systemPrompt = this.getV0WebsiteSystemPrompt();
+      const systemPrompt = this.getV0WebsiteSystemPrompt(resolvedFramework);
 
-      const userPrompt = this.buildV0GenerationUserMessage(prompt, websiteName);
+      const userPrompt = this.buildV0GenerationUserMessage(prompt, websiteName, resolvedFramework);
 
       console.log('WebsiteService.generateWebsite - Original prompt length:', prompt.length);
       console.log('WebsiteService.generateWebsite - Final message length:', userPrompt.length);
@@ -489,8 +513,16 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
         systemPrompt,
         userPrompt,
       );
+      console.log('WebsiteService.generateWebsite - demoUrl from fetchWebsiteCodeFromV0:', {
+        chatId: v0ChatId || null,
+        demoUrl: v0DemoUrl || null,
+      });
       if (v0ChatId && !v0DemoUrl) {
         v0DemoUrl = await this.fetchV0DemoUrlByChatId(v0ChatId);
+        console.log('WebsiteService.generateWebsite - demoUrl after fetchV0DemoUrlByChatId:', {
+          chatId: v0ChatId,
+          demoUrl: v0DemoUrl || null,
+        });
       }
 
       return this.persistWebsiteAfterV0Generation({
@@ -649,8 +681,16 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     }
     const responseContent = this.serializeChatForHistory(chat);
     let v0DemoUrl = this.extractV0DemoFromChatDetail(chat);
+    console.log('WebsiteService.finalizeWebsiteFromV0Chat - extracted demoUrl:', {
+      chatId: resolvedChatId,
+      demoUrl: v0DemoUrl || null,
+    });
     if (!v0DemoUrl) {
       v0DemoUrl = await this.fetchV0DemoUrlByChatId(resolvedChatId);
+      console.log('WebsiteService.finalizeWebsiteFromV0Chat - extracted demoUrl after refetch:', {
+        chatId: resolvedChatId,
+        demoUrl: v0DemoUrl || null,
+      });
     }
     return this.persistWebsiteAfterV0Generation({
       userId,
@@ -666,9 +706,16 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
   /**
    * v0 `experimental_stream`: proxy raw stream to the client, then GET /chats/:id and persist (same pipeline as generate).
    */
-  async pipeV0GenerationStream(res: Response, userId: string, prompt: string, websiteName: string): Promise<void> {
-    const systemPrompt = this.getV0WebsiteSystemPrompt();
-    const userMessage = this.buildV0GenerationUserMessage(prompt, websiteName);
+  async pipeV0GenerationStream(
+    res: Response,
+    userId: string,
+    prompt: string,
+    websiteName: string,
+    framework?: string,
+  ): Promise<void> {
+    const resolvedFramework = this.normalizeFramework(framework);
+    const systemPrompt = this.getV0WebsiteSystemPrompt(resolvedFramework);
+    const userMessage = this.buildV0GenerationUserMessage(prompt, websiteName, resolvedFramework);
     const modelConfiguration = this.getV0ModelConfiguration();
     const body: Record<string, unknown> = {
       message: userMessage,
@@ -825,6 +872,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     userId: string,
     websiteId: string,
     editPrompt: string,
+    framework?: string,
   ): Promise<void> {
     const website = await this.websiteRepository.findOne({
       where: { _id: new ObjectId(websiteId) } as any,
@@ -882,9 +930,10 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       streamEditBaseline = undefined;
     }
 
+    const resolvedFramework = this.normalizeFramework(framework);
     const modelConfiguration = this.getV0ModelConfiguration();
     const body: Record<string, unknown> = {
-      message: (editPrompt || '').trim(),
+      message: this.buildFrameworkScopedEditMessage((editPrompt || '').trim(), resolvedFramework),
       responseMode: 'experimental_stream',
     };
     if (modelConfiguration) body.modelConfiguration = modelConfiguration;
@@ -1008,8 +1057,16 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
           websiteCode = this.convertV0FilesToStructure(websiteCode);
         }
         let v0DemoUrl = this.extractV0DemoFromChatDetail(chat);
+        console.log('WebsiteService.pipeV0EditStream - extracted demoUrl:', {
+          chatId: chat.id || effectiveChatId,
+          demoUrl: v0DemoUrl || null,
+        });
         if (chat.id && !v0DemoUrl) {
           v0DemoUrl = await this.fetchV0DemoUrlByChatId(chat.id);
+          console.log('WebsiteService.pipeV0EditStream - extracted demoUrl after refetch:', {
+            chatId: chat.id,
+            demoUrl: v0DemoUrl || null,
+          });
         }
         const resolvedChatId = chat.id || effectiveChatId;
 
@@ -1054,8 +1111,16 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     newV0DemoUrl?: string,
   ) {
     let v0DemoUrl = newV0DemoUrl;
+    console.log('WebsiteService.saveWebsiteEditFromFetchedCode - incoming demoUrl:', {
+      chatId: newV0ChatId || null,
+      demoUrl: v0DemoUrl || null,
+    });
     if (newV0ChatId && !v0DemoUrl) {
       v0DemoUrl = await this.fetchV0DemoUrlByChatId(newV0ChatId);
+      console.log('WebsiteService.saveWebsiteEditFromFetchedCode - demo after chat refetch:', {
+        chatId: newV0ChatId,
+        demoUrl: v0DemoUrl || null,
+      });
     }
     let websiteCode = websiteCodeRaw;
 
@@ -1162,7 +1227,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
   /**
    * Edit: prefer `chats.sendMessage` + stored `v0ChatId` (v0-clone). Fallback: `chats.create` with inlined site JSON when no chat id.
    */
-  async editWebsite(websiteId: string, userId: string, editPrompt: string) {
+  async editWebsite(websiteId: string, userId: string, editPrompt: string, framework?: string) {
     console.log('WebsiteService.editWebsite - Starting:', { websiteId, userId, editPromptLength: editPrompt.length });
     const website = await this.websiteRepository.findOne({
       where: { _id: new ObjectId(websiteId) } as any,
@@ -1183,6 +1248,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       website.userId = userId;
       await this.websiteRepository.save(website);
     }
+    const resolvedFramework = this.normalizeFramework(framework);
 
     const v0ChatIdTrimmed = website.v0ChatId?.trim();
     const editV0Path = v0ChatIdTrimmed ? ('sendMessage' as const) : ('create_fallback' as const);
@@ -1192,7 +1258,10 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
 
     if (v0ChatIdTrimmed) {
       console.log('WebsiteService.editWebsite - Continuing v0 chat via sendMessage:', v0ChatIdTrimmed);
-      const r = await this.fetchWebsiteCodeFromV0SendMessage(v0ChatIdTrimmed, editPrompt.trim());
+      const r = await this.fetchWebsiteCodeFromV0SendMessage(
+        v0ChatIdTrimmed,
+        this.buildFrameworkScopedEditMessage(editPrompt.trim(), resolvedFramework),
+      );
       websiteCodeRaw = r.websiteCode;
       newV0ChatId = r.v0ChatId;
       newV0DemoUrl = r.v0DemoUrl;
@@ -1216,7 +1285,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
 - Escape strings for JSON (newlines as \\n, quotes escaped).`;
 
       const userMessage = isComponentBased
-        ? `Current website (JSON):\n${JSON.stringify({ components: website.components || [], viteConfig: website.viteConfig || {} })}\n\nUser edit request: ${editPrompt}`
+        ? `Target framework: ${resolvedFramework === 'react' ? 'React (Vite)' : 'Next.js'}\nCurrent website (JSON):\n${JSON.stringify({ components: website.components || [], viteConfig: website.viteConfig || {} })}\n\nUser edit request: ${editPrompt}`
         : `Current HTML:\n${website.htmlCode || ''}\n\nCurrent CSS:\n${website.cssCode || ''}\n\nCurrent JS:\n${website.jsCode || ''}\n\nUser edit request: ${editPrompt}`;
 
       const r = await this.fetchWebsiteCodeFromV0(editSystemPrompt, userMessage);
@@ -1240,17 +1309,41 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
    * v0 only receives `message` on chat create — the model never saw `websiteName` unless we inline it.
    * Skip auto placeholders like `Website 1739…` so we do not force a fake brand name.
    */
-  private buildV0GenerationUserMessage(prompt: string, websiteName: string): string {
+  private buildV0GenerationUserMessage(
+    prompt: string,
+    websiteName: string,
+    framework: WebsiteFramework,
+  ): string {
     const p = (prompt || '').trim();
+    const boundedPrompt = framework === 'react' ? this.buildReactBoundedPrompt(p) : p;
     const raw = (websiteName || '').trim();
     const looksAutoPlaceholder = /^Website\s+\d{10,}$/i.test(raw);
     const name = looksAutoPlaceholder ? '' : raw;
-    if (!name) return p;
+    const frameworkHeader =
+      framework === 'react' ? 'Target framework: React (Vite).' : 'Target framework: Next.js.';
+    if (!name) return `${frameworkHeader}\n\nRequirements:\n${boundedPrompt}`;
     return (
-      `Site name (use for <title>, document/branding text, header/logo label, and package.json "name" where applicable — keep this exact name, do not substitute a different product title):\n` +
+      `${frameworkHeader}\n\n` +
+      `Site name (use for <title>, document/branding text, header/logo label, and package.json "name" where applicable - keep this exact name, do not substitute a different product title):\n` +
       `${JSON.stringify(name)}\n\n` +
-      `Requirements:\n${p}`
+      `Requirements:\n${boundedPrompt}`
     );
+  }
+
+  private buildReactBoundedPrompt(prompt: string): string {
+    return `${prompt}
+
+STRICT REACT/VITE BOUNDARY (must follow):
+- Build ONLY a React + Vite project. Do NOT generate Next.js files (no app/layout.tsx, no next/* imports, no metadata export).
+- Return component-based JSON structure with "components" and "viteConfig".
+- Keep routing with react-router-dom when multiple pages are requested.
+- Ensure viteConfig.mainJsx imports React, ReactDOM, BrowserRouter/Routes/Route, and mounts App via createRoot.
+- Use only browser-safe client-side React code.`;
+  }
+
+  private buildFrameworkScopedEditMessage(editPrompt: string, framework: WebsiteFramework): string {
+    const target = framework === 'react' ? 'React (Vite)' : 'Next.js';
+    return `Target framework: ${target}. Keep this framework while applying the edit.\n\nEdit request:\n${editPrompt}`;
   }
 
   /**
@@ -2447,11 +2540,16 @@ DESIGN (MANDATORY - PRODUCTION-READY):
         (typeof websiteCode?.css === 'string' && websiteCode.css.trim().length > 0);
       if (hasValidCode) {
         console.log('WebsiteService - Valid code received on attempt', attempt);
+        const extractedDemo = this.extractV0DemoFromChatDetail(chat);
+        console.log('WebsiteService.fetchWebsiteCodeFromV0 - extracted demoUrl from chat:', {
+          chatId: chat.id || null,
+          demoUrl: extractedDemo || null,
+        });
         return {
           responseContent,
           websiteCode,
           v0ChatId: chat.id,
-          v0DemoUrl: this.extractV0DemoFromChatDetail(chat),
+          v0DemoUrl: extractedDemo,
         };
       }
 
@@ -2582,11 +2680,16 @@ DESIGN (MANDATORY - PRODUCTION-READY):
       if (hasValidCode) {
         console.log('WebsiteService - Valid code from sendMessage on attempt', attempt);
         const resolvedId = chat.id || chatId;
+        const extractedDemo = this.extractV0DemoFromChatDetail(chat);
+        console.log('WebsiteService.fetchWebsiteCodeFromV0SendMessage - extracted demoUrl from chat:', {
+          chatId: resolvedId,
+          demoUrl: extractedDemo || null,
+        });
         return {
           responseContent,
           websiteCode,
           v0ChatId: resolvedId,
-          v0DemoUrl: this.extractV0DemoFromChatDetail(chat),
+          v0DemoUrl: extractedDemo,
         };
       }
 

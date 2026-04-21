@@ -15,11 +15,21 @@ interface PromptInputProps {
   prompt: string;
   setPrompt: (value: string) => void;
   onGenerate: (overridePrompt?: string) => void;
+  framework: 'next' | 'react';
+  setFramework: (value: 'next' | 'react') => void;
   loading?: boolean;
   disabled?: boolean;
 }
 
-export function PromptInput({ prompt, setPrompt, onGenerate, loading = false, disabled = false }: PromptInputProps) {
+export function PromptInput({
+  prompt,
+  setPrompt,
+  onGenerate,
+  framework,
+  setFramework,
+  loading = false,
+  disabled = false,
+}: PromptInputProps) {
   const [isFocused, setIsFocused] = useState(false);
 
   const handleVoiceEnd = (finalTranscript: string) => {
@@ -97,6 +107,34 @@ export function PromptInput({ prompt, setPrompt, onGenerate, loading = false, di
                 </>
               )}
             </button>
+            <div className="flex items-center rounded-lg border border-border/60 bg-background/30 p-0.5">
+              <button
+                type="button"
+                onClick={() => setFramework('next')}
+                disabled={disabled || loading}
+                className={cn(
+                  'rounded-md px-2 py-1 text-xs transition-all disabled:opacity-50 disabled:cursor-not-allowed',
+                  framework === 'next'
+                    ? 'bg-accent/20 text-accent'
+                    : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
+                )}
+              >
+                Next.js
+              </button>
+              <button
+                type="button"
+                onClick={() => setFramework('react')}
+                disabled={disabled || loading}
+                className={cn(
+                  'rounded-md px-2 py-1 text-xs transition-all disabled:opacity-50 disabled:cursor-not-allowed',
+                  framework === 'react'
+                    ? 'bg-accent/20 text-accent'
+                    : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
+                )}
+              >
+                React
+              </button>
+            </div>
           </div>
 
           <button

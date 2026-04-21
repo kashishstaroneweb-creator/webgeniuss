@@ -30,6 +30,7 @@ export class WebsiteController {
         userId,
         generateDto.prompt,
         generateDto.websiteName || `Website ${Date.now()}`,
+        generateDto.framework,
       );
       console.log('WebsiteController.generate - Success, website ID:', result.id);
       return result;
@@ -59,7 +60,13 @@ export class WebsiteController {
     const userId = this.userIdFromRequest(user);
     const websiteName = generateDto.websiteName || `Website ${Date.now()}`;
     try {
-      await this.websiteService.pipeV0GenerationStream(res, userId, generateDto.prompt, websiteName);
+      await this.websiteService.pipeV0GenerationStream(
+        res,
+        userId,
+        generateDto.prompt,
+        websiteName,
+        generateDto.framework,
+      );
     } catch (error: any) {
       if (!res.headersSent) {
         const message = error?.message || 'Unknown error during streaming generation';
@@ -168,7 +175,13 @@ export class WebsiteController {
   ) {
     const userId = this.userIdFromRequest(user);
     try {
-      await this.websiteService.pipeV0EditStream(res, userId, websiteId, editDto.editPrompt);
+      await this.websiteService.pipeV0EditStream(
+        res,
+        userId,
+        websiteId,
+        editDto.editPrompt,
+        editDto.framework,
+      );
     } catch (error: any) {
       if (!res.headersSent) {
         const message = error?.message || 'Unknown error during edit stream';
@@ -191,7 +204,12 @@ export class WebsiteController {
   ) {
     const userId = this.userIdFromRequest(user);
     try {
-      return await this.websiteService.editWebsite(websiteId, userId, editDto.editPrompt);
+      return await this.websiteService.editWebsite(
+        websiteId,
+        userId,
+        editDto.editPrompt,
+        editDto.framework,
+      );
     } catch (error: any) {
       const message = error?.message || 'Unknown error during edit';
       const status = error?.status || HttpStatus.INTERNAL_SERVER_ERROR;

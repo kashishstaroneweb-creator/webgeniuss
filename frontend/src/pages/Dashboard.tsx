@@ -62,10 +62,20 @@ interface ViteConfig {
   styleCss?: string;
 }
 
+type WebsiteFramework = 'next' | 'react';
+
+const inferFrameworkFromWebsite = (site: Partial<GeneratedWebsite> | null | undefined): WebsiteFramework => {
+  if (!site) return 'next';
+  if (site.framework === 'react' || site.framework === 'next') return site.framework;
+  const hasReactShape = (site.components?.length ?? 0) > 0 || !!(site.viteConfig?.mainJsx || site.viteConfig?.mainJs);
+  return hasReactShape ? 'react' : 'next';
+};
+
 interface GeneratedWebsite {
   id: string;
   userId?: string;
   websiteName: string;
+  framework?: WebsiteFramework;
   prompt?: string;
   htmlCode?: string;
   cssCode?: string;
@@ -92,6 +102,7 @@ const Dashboard = () => {
   const [prompt, setPrompt] = useState('');
   const [loading, setLoading] = useState(false);
   const [websiteName, setWebsiteName] = useState('');
+  const [framework, setFramework] = useState<WebsiteFramework>('next');
   const [generatedWebsite, setGeneratedWebsite] = useState<GeneratedWebsite | null>(null);
   const [showCodeView, setShowCodeView] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -198,6 +209,7 @@ const Dashboard = () => {
           id: data.id,
           userId: data.userId,
           websiteName: data.websiteName || '',
+          framework: inferFrameworkFromWebsite(data),
           prompt: data.prompt,
           htmlCode: data.htmlCode,
           cssCode: data.cssCode,
@@ -210,6 +222,7 @@ const Dashboard = () => {
         });
         setPrompt(data.prompt || '');
         setWebsiteName(data.websiteName || '');
+        setFramework(inferFrameworkFromWebsite(data));
         setCollapsed(true);
       } catch (err) {
         if (!cancelled) console.error('Failed to load website from history:', err);
@@ -356,6 +369,7 @@ const Dashboard = () => {
         body: JSON.stringify({
           prompt: finalPrompt,
           websiteName: websiteNameFinal,
+          framework,
           ...(currentUserId && { userId: currentUserId }),
         }),
       });
@@ -430,6 +444,7 @@ const Dashboard = () => {
       });
 
       setGeneratedWebsite(saved);
+      setFramework(inferFrameworkFromWebsite(saved));
       if (saved.id) syncWebsiteIdToUrl(saved.id);
       // Keep prompt and websiteName visible on the left for "generate again"
       // Automatically collapse sidebar when website is generated
@@ -484,6 +499,7 @@ const Dashboard = () => {
     const applySaved = (saved: GeneratedWebsite) => {
       const nextId = saved.id || websiteId;
       setGeneratedWebsite({ ...saved, id: nextId });
+      setFramework(inferFrameworkFromWebsite(saved));
       setAddOnPrompt('');
       if (nextId) syncWebsiteIdToUrl(nextId);
     };
@@ -497,14 +513,14 @@ const Dashboard = () => {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ editPrompt }),
+        body: JSON.stringify({ editPrompt, framework }),
       });
 
       // No v0 thread: backend only supports sync full-site edit
       if (streamRes.status === 422) {
         const res = await api.post<GeneratedWebsite & { message?: string }>(
           `/website/${websiteId}/edit`,
-          { editPrompt },
+          { editPrompt, framework },
           { timeout: EDIT_SYNC_FALLBACK_TIMEOUT_MS }
         );
         applySaved({ ...res.data, id: res.data.id || websiteId });
@@ -661,6 +677,8 @@ const Dashboard = () => {
                 prompt={prompt}
                 setPrompt={setPrompt}
                 onGenerate={handleGenerate}
+                framework={framework}
+                setFramework={setFramework}
                 loading={loading}
               />
             </div>
@@ -805,6 +823,34 @@ const Dashboard = () => {
                           </>
                         )}
                       </button>
+                      <div className="flex items-center rounded-lg border border-border/60 bg-background/30 p-0.5">
+                        <button
+                          type="button"
+                          onClick={() => setFramework('next')}
+                          disabled={editLoading || loading}
+                          className={cn(
+                            'rounded-md px-2 py-1 text-xs transition-all disabled:opacity-50 disabled:cursor-not-allowed',
+                            framework === 'next'
+                              ? 'bg-accent/20 text-accent'
+                              : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
+                          )}
+                        >
+                          Next.js
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setFramework('react')}
+                          disabled={editLoading || loading}
+                          className={cn(
+                            'rounded-md px-2 py-1 text-xs transition-all disabled:opacity-50 disabled:cursor-not-allowed',
+                            framework === 'react'
+                              ? 'bg-accent/20 text-accent'
+                              : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
+                          )}
+                        >
+                          React
+                        </button>
+                      </div>
                     </div>
                     <button
                       type="button"

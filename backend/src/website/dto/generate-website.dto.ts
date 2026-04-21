@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsOptional } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsIn } from 'class-validator';
 
 export class GenerateWebsiteDto {
   @IsString()
@@ -11,5 +11,10 @@ export class GenerateWebsiteDto {
   @IsString()
   @IsOptional()
   userId?: string;
+
+  @IsString()
+  @IsOptional()
+  @IsIn(['next', 'react'])
+  framework?: 'next' | 'react';
 }
 
