@@ -8,8 +8,7 @@ const ThemeToggle = () => {
   useEffect(() => {
     const savedTheme = localStorage.getItem('theme') as 'light' | 'dark' | null;
     const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    // Default to dark to match reference design
-    const initialTheme = savedTheme || (prefersDark ? 'dark' : 'dark');
+    const initialTheme = savedTheme || (prefersDark ? 'dark' : 'light');
     setTheme(initialTheme);
     document.documentElement.classList.toggle('dark', initialTheme === 'dark');
   }, []);

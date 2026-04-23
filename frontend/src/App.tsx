@@ -56,7 +56,7 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
       <AppSidebar />
       <div className="flex flex-1 flex-col overflow-hidden gap-4">
         <AppHeader />
-        <main className="flex-1 overflow-y-auto rounded-3xl glass-panel relative scrollbar-hide">
+        <main className="flex-1 overflow-y-auto rounded-3xl relative scrollbar-hide border border-border/50 bg-white/70 dark:bg-black/40 backdrop-blur-xl">
           {children}
         </main>
       </div>
@@ -69,10 +69,10 @@ function App() {
   const { isAuthenticated } = useAuthStore();
 
   useEffect(() => {
-    // Initialize theme early to prevent flash - default to dark to match reference
+    // Initialize theme early to prevent flash and respect system preference.
     const savedTheme = localStorage.getItem('theme') as 'light' | 'dark' | null;
     const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const initialTheme = savedTheme || (prefersDark ? 'dark' : 'dark'); // Default to dark
+    const initialTheme = savedTheme || (prefersDark ? 'dark' : 'light');
     document.documentElement.classList.toggle('dark', initialTheme === 'dark');
     // Auth is hydrated synchronously in authStore (readStoredAuth) so refresh keeps URL query params.
   }, []);

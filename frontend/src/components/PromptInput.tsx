@@ -5,7 +5,7 @@ import { useVoiceRecognition } from '@/lib/useVoiceRecognition';
 import { VoiceVisualizer } from '@/components/VoiceVisualizer';
 
 const suggestions = [
-  'A modern SaaS landing page with dark theme',
+  'A modern SaaS landing page with clean light theme',
   'E-commerce product page with reviews',
   'Dashboard with analytics charts',
   'Portfolio website with animations',
@@ -144,7 +144,7 @@ export function PromptInput({
             className={cn(
               'flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all duration-200',
               prompt.trim() && !loading && !disabled
-                ? 'btn-gradient-border text-green-400 hover:text-green-300 active:scale-95'
+                ? 'btn-gradient-border text-foreground hover:text-accent dark:text-green-300 dark:hover:text-green-200 active:scale-95'
                 : 'bg-secondary text-muted-foreground cursor-not-allowed'
             )}
           >

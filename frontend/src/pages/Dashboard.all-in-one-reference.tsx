@@ -23,7 +23,7 @@ import { cn } from '@/lib/utils';
 import Button from '@/components/ui/Button';
 
 const suggestions = [
-  'A modern SaaS landing page with dark theme',
+  'A modern SaaS landing page with clean light theme',
   'E-commerce product page with reviews',
   'Dashboard with analytics charts',
   'Portfolio website with animations',
