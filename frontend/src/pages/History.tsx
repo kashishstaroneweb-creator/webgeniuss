@@ -34,6 +34,8 @@ interface Website {
   components?: Component[];
   viteConfig?: ViteConfig;
   v0DemoUrl?: string;
+  reactArtifactUrl?: string;
+  reactBuildStatus?: 'queued' | 'building' | 'ready' | 'failed';
   createdAt: string;
 }
 
@@ -316,14 +318,15 @@ const History = () => {
                       <div className="border rounded-lg overflow-hidden bg-card" style={{ minHeight: '500px', maxHeight: '700px' }}>
                         {viewMode[website.id] === 'preview' ? (
                           <div className="h-full overflow-auto flex flex-col" style={{ maxHeight: '700px' }}>
-                            {website.v0DemoUrl ? (
-                              <iframe
-                                src={website.v0DemoUrl}
-                                title={website.websiteName || 'Preview'}
-                                className="w-full min-h-[500px] border-0 flex-1"
-                                style={{ height: '700px' }}
-                                sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
-                              />
+                            {website.reactBuildStatus &&
+                            !website.reactArtifactUrl &&
+                            !website.v0DemoUrl ? (
+                              <div className="min-h-[500px] border rounded-xl p-6 bg-muted/20 overflow-auto">
+                                <h3 className="text-lg font-semibold mb-2">React preview not ready</h3>
+                                <p className="text-sm text-muted-foreground">
+                                  Status: <span className="font-medium">{website.reactBuildStatus}</span>
+                                </p>
+                              </div>
                             ) : (
                               <WebsitePreview
                                 html={website.htmlCode}
@@ -333,6 +336,8 @@ const History = () => {
                                 viteConfig={website.viteConfig}
                                 websiteName={website.websiteName}
                                 prompt={website.prompt}
+                                v0DemoUrl={website.v0DemoUrl}
+                                artifactUrl={website.reactArtifactUrl}
                                 className="min-h-[500px]"
                               />
                             )}
@@ -733,7 +738,9 @@ const History = () => {
         )}
 
         {previewWebsite && (
-          previewWebsite.v0DemoUrl ? (
+          previewWebsite.reactBuildStatus &&
+          !previewWebsite.reactArtifactUrl &&
+          !previewWebsite.v0DemoUrl ? (
             <div className="fixed inset-0 z-50 flex flex-col bg-background">
               <div className="flex items-center justify-between p-4 border-b bg-card flex-shrink-0">
                 <h2 className="text-lg font-semibold">{previewWebsite.websiteName || 'Website Preview'}</h2>
@@ -741,12 +748,12 @@ const History = () => {
                   Close
                 </Button>
               </div>
-              <iframe
-                src={previewWebsite.v0DemoUrl}
-                title={previewWebsite.websiteName || 'Preview'}
-                className="flex-1 w-full border-0 min-h-0"
-                sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
-              />
+              <div className="p-6">
+                <h3 className="text-lg font-semibold mb-2">React preview not ready</h3>
+                <p className="text-sm text-muted-foreground">
+                  Status: <span className="font-medium">{previewWebsite.reactBuildStatus}</span>
+                </p>
+              </div>
             </div>
           ) : (
             <WebsitePreview
@@ -757,6 +764,8 @@ const History = () => {
               viteConfig={previewWebsite.viteConfig}
               websiteName={previewWebsite.websiteName}
               prompt={previewWebsite.prompt}
+              v0DemoUrl={previewWebsite.v0DemoUrl}
+              artifactUrl={previewWebsite.reactArtifactUrl}
               isModal={true}
               onClose={() => setPreviewWebsite(null)}
             />

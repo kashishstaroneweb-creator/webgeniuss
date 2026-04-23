@@ -92,6 +92,7 @@ export class WebsiteController {
         dto.chatId,
         websiteName,
         dto.prompt ?? '',
+        dto.framework,
       );
     } catch (error: any) {
       const message = error?.message || 'Unknown error during finalize';
@@ -227,6 +228,23 @@ export class WebsiteController {
   async getWebsite(@CurrentUser() user: any, @Param('id') id: string) {
     const userId = this.userIdFromRequest(user);
     return this.websiteService.getWebsiteById(id, userId);
+  }
+
+  @Post(':id/rebuild-preview')
+  @UseGuards(JwtAuthGuard)
+  async rebuildPreview(@CurrentUser() user: any, @Param('id') id: string) {
+    const userId = this.userIdFromRequest(user);
+    try {
+      return await this.websiteService.rebuildReactPreview(id, userId);
+    } catch (error: any) {
+      const message = error?.message || 'Unknown error during rebuild';
+      const status = error?.status || HttpStatus.INTERNAL_SERVER_ERROR;
+      throw new HttpException(
+        { message, statusCode: status, error: 'Preview rebuild failed' },
+        status,
+        { cause: error },
+      );
+    }
   }
 
   @Delete(':id')

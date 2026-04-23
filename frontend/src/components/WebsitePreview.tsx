@@ -32,6 +32,7 @@ interface WebsitePreviewProps {
   isModal?: boolean;
   className?: string;
   v0DemoUrl?: string;
+  artifactUrl?: string;
 }
 
 // Known globals and reserved names that must never get a fallback definition
@@ -49,6 +50,8 @@ const PREVIEW_KNOWN_GLOBALS = new Set([
   'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default', 'delete', 'do', 'else', 'export', 'extends',
   'finally', 'for', 'function', 'if', 'import', 'in', 'instanceof', 'let', 'new', 'return', 'static', 'super', 'switch', 'this', 'throw',
   'try', 'typeof', 'var', 'void', 'while', 'with', 'yield', 'async', 'await',
+  // Extra reserved words that can appear in plain text and must never become fallback vars
+  'interface', 'implements', 'package', 'private', 'protected', 'public', 'enum',
 ]);
 
 /**
@@ -185,10 +188,41 @@ function getUsedButUndeclaredIdentifiers(
   return needsFallback.sort();
 }
 
-const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, prompt, onClose, isModal = false, className, v0DemoUrl }: WebsitePreviewProps) => {
+const WebsitePreview = ({
+  html,
+  css,
+  js,
+  components,
+  viteConfig,
+  websiteName,
+  prompt,
+  onClose,
+  isModal = false,
+  className,
+  v0DemoUrl,
+  artifactUrl,
+}: WebsitePreviewProps) => {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [previewPath, setPreviewPath] = useState('/');
+  const hostedPreviewUrlRaw = artifactUrl || v0DemoUrl;
+  const normalizedHostedUrl = hostedPreviewUrlRaw
+    ? hostedPreviewUrlRaw.replace(/\/index\.html(\?.*)?$/i, '/')
+    : hostedPreviewUrlRaw;
+  const hostedPreviewUrl =
+    normalizedHostedUrl && normalizedHostedUrl.startsWith('/preview-artifacts')
+      ? `${((import.meta.env?.VITE_API_URL as string | undefined) || 'http://localhost:3000').replace(/\/+$/, '')}${normalizedHostedUrl}`
+      : normalizedHostedUrl;
+
+  useEffect(() => {
+    console.log('[WebsitePreview] Source selection:', {
+      websiteName: websiteName || '(unnamed)',
+      hasArtifactUrl: !!artifactUrl,
+      hasV0DemoUrl: !!v0DemoUrl,
+      hostedPreviewUrl: hostedPreviewUrl || null,
+      mode: hostedPreviewUrl ? 'hosted' : 'inline-babel',
+    });
+  }, [websiteName, artifactUrl, v0DemoUrl, hostedPreviewUrl]);
 
   useEffect(() => {
     const handleMessage = (e: MessageEvent) => {
@@ -208,7 +242,7 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
 
   // Function to load content into iframe (memoized with useCallback)
   const loadIframeContent = useCallback(() => {
-    if (v0DemoUrl) return; // Hosted preview handles itself
+    if (hostedPreviewUrl) return; // Hosted preview handles itself
     if (iframeRef.current) {
       // Wait for iframe to be ready
       const iframe = iframeRef.current;
@@ -282,6 +316,49 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
             return code.replace(/(\\)+'/g, "\\'"); // \', \\', \\\'... → exactly \'
           };
 
+          // Escape unsafe apostrophes inside single-quoted JS strings (e.g. 'I've')
+          const escapeUnsafeSingleQuoteContent = (code: string): string => {
+            if (!code || typeof code !== 'string') return code;
+            let out = '';
+            let inSingle = false;
+            let inDouble = false;
+            let inTemplate = false;
+            for (let i = 0; i < code.length; i++) {
+              const ch = code[i];
+              const prev = i > 0 ? code[i - 1] : '';
+              const next = i + 1 < code.length ? code[i + 1] : '';
+              const escaped = prev === '\\';
+
+              if (!escaped && !inDouble && !inTemplate && ch === "'") {
+                if (!inSingle) {
+                  inSingle = true;
+                  out += ch;
+                  continue;
+                }
+                if (/[A-Za-z0-9]/.test(prev) && /[A-Za-z0-9]/.test(next)) {
+                  out += "\\'";
+                  continue;
+                }
+                inSingle = false;
+                out += ch;
+                continue;
+              }
+
+              if (!escaped && !inSingle && !inTemplate && ch === '"') {
+                inDouble = !inDouble;
+                out += ch;
+                continue;
+              }
+              if (!escaped && !inSingle && !inDouble && ch === '`') {
+                inTemplate = !inTemplate;
+                out += ch;
+                continue;
+              }
+              out += ch;
+            }
+            return out;
+          };
+
           // Remove one top-level "function App() { ... }" so we don't redeclare App when componentDefinitions already has "const App = (function() {...})();"
           const stripTopLevelFunctionApp = (code: string): string => {
             const match = code.match(/\bfunction\s+App\s*\([^)]*\)\s*\{/);
@@ -317,6 +394,16 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
               .replace(/(\w+)\s*=\s*\[\s*\]\s*\./g, '($1 || []).')
               .replace(/=\s*\{\s*\}\s*([a-zA-Z])(?=\s*[,)\}\]])/g, '= {} ')
               .replace(/=\s*\[\s*\]\s*([a-zA-Z])(?=\s*[,)\}\]])/g, '= [] ');
+          };
+
+          // Fix model outputs like: const observer = []; observer.observe(...)
+          // by replacing observer-like []/{} declarations with a no-op observer object.
+          const sanitizeObserverDeclarations = (code: string): string => {
+            if (!code || typeof code !== 'string') return code;
+            const observerStub = '{ observe: function() {}, unobserve: function() {}, disconnect: function() {}, takeRecords: function() { return []; } }';
+            return code
+              .replace(/\b(const|let|var)\s+([A-Za-z_$][\w$]*observer[\w$]*)\s*=\s*\[\s*\]\s*;?/gi, '$1 $2 = ' + observerStub + ';')
+              .replace(/\b(const|let|var)\s+([A-Za-z_$][\w$]*observer[\w$]*)\s*=\s*\{\s*\}\s*;?/gi, '$1 $2 = ' + observerStub + ';');
           };
           
           // Vite/React preview: named components and/or entry in viteConfig (mainJsx/mainJs)
@@ -354,6 +441,8 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
                   code = sanitizeDollarInJsx(code);
                   code = transformJsxAttributeTemplateLiterals(code);
                   code = sanitizeInvalidAssignment(code);
+                  code = sanitizeObserverDeclarations(code);
+                  code = escapeUnsafeSingleQuoteContent(code);
                   code = wrapAdjacentJsxInFragment(code);
                   
                   // Remove import statements (we'll provide React and hooks in preamble - do NOT re-declare here to avoid "already been declared")
@@ -448,6 +537,8 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
                 processedMain = sanitizeDollarInJsx(processedMain);
                 processedMain = transformJsxAttributeTemplateLiterals(processedMain);
                 processedMain = sanitizeInvalidAssignment(processedMain);
+                processedMain = sanitizeObserverDeclarations(processedMain);
+                processedMain = escapeUnsafeSingleQuoteContent(processedMain);
                 processedMain = wrapAdjacentJsxInFragment(processedMain);
                 const componentNamesForImports = siteComponents
                   .filter(c => c.language === 'jsx' || c.language === 'js' || c.language === 'tsx')
@@ -681,6 +772,17 @@ const WebsitePreview = ({ html, css, js, components, viteConfig, websiteName, pr
                         }
                       }); 
                     }`;
+                  }
+                  // Observer-like variables are expected to expose observe/unobserve/disconnect
+                  // (e.g. IntersectionObserver fallback variable names like `observer`).
+                  if (/observer/i.test(name)) {
+                    return `if (typeof ${name} === 'undefined') { 
+                      var ${name} = {}; 
+                    }
+                    if (typeof ${name}.observe !== 'function') { ${name}.observe = function() {}; }
+                    if (typeof ${name}.unobserve !== 'function') { ${name}.unobserve = function() {}; }
+                    if (typeof ${name}.disconnect !== 'function') { ${name}.disconnect = function() {}; }
+                    if (typeof ${name}.takeRecords !== 'function') { ${name}.takeRecords = function() { return []; }; }`;
                   }
                   return `if (typeof ${name} === 'undefined') { var ${name} = []; }`;
                 })
@@ -1198,7 +1300,7 @@ window.__PREVIEW_PARAMS__ = JSON.parse('${placeholderParamsEscaped}');
           content = content.replace(/<script([^>]*)>([\s\S]*?)<\/script>/gi, (_m, attrs, body) => {
             const normalized = normalizeEscapedQuotes(body);
             const fixedJsx = fixMisplacedFragmentClose(normalized);
-            return '<script' + attrs + '>' + sanitizeInvalidAssignment(transformJsxAttributeTemplateLiterals(fixedJsx)) + '</script>';
+            return '<script' + attrs + '>' + escapeUnsafeSingleQuoteContent(sanitizeObserverDeclarations(sanitizeInvalidAssignment(transformJsxAttributeTemplateLiterals(fixedJsx)))) + '</script>';
           });
           
           doc.open();
@@ -1219,7 +1321,7 @@ window.__PREVIEW_PARAMS__ = JSON.parse('${placeholderParamsEscaped}');
         setTimeout(loadContent, 100);
       }
     }
-  }, [html, css, js, components, viteConfig, websiteName, prompt]);
+  }, [html, css, js, components, viteConfig, websiteName, prompt, hostedPreviewUrl]);
 
   // Load content when html, css, js, or websiteName changes
   useEffect(() => {
@@ -1305,6 +1407,7 @@ window.__PREVIEW_PARAMS__ = JSON.parse('${placeholderParamsEscaped}');
           </div>
           <iframe
             ref={iframeRef}
+            src={hostedPreviewUrl || undefined}
             className="flex-1 w-full border-0"
             title="Website Preview"
             sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
@@ -1359,7 +1462,7 @@ window.__PREVIEW_PARAMS__ = JSON.parse('${placeholderParamsEscaped}');
       <div className="relative flex-1 min-h-0 bg-white">
         <iframe
           ref={iframeRef}
-          src={v0DemoUrl || undefined}
+          src={hostedPreviewUrl || undefined}
           className="w-full h-full border-0"
           title="Website Preview"
           sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"

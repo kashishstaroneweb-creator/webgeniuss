@@ -17,4 +17,8 @@ export class FinalizeV0ChatDto {
   @IsString()
   @IsOptional()
   prompt?: string;
+
+  @IsString()
+  @IsOptional()
+  framework?: 'next' | 'react';
 }

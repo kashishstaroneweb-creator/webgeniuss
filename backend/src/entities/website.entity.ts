@@ -17,6 +17,9 @@ export class Website {
   @Column()
   websiteName: string;
 
+  @Column({ nullable: true })
+  framework?: 'next' | 'react';
+
   @Column({ type: 'text', nullable: true })
   prompt?: string;
 
@@ -58,6 +61,25 @@ export class Website {
   /** Hosted preview URL from v0 (`demo` / `latestVersion.demoUrl`), same pattern as v0-clone. */
   @Column({ nullable: true })
   v0DemoUrl?: string;
+
+  /** React-only build pipeline status for artifact previews. */
+  @Column({ nullable: true })
+  reactBuildStatus?: 'queued' | 'building' | 'ready' | 'failed';
+
+  @Column({ type: 'text', nullable: true })
+  reactBuildLog?: string;
+
+  @Column({ nullable: true })
+  reactBuildId?: string;
+
+  @Column({ nullable: true })
+  reactArtifactUrl?: string;
+
+  @Column({ nullable: true })
+  reactBuildStartedAt?: Date;
+
+  @Column({ nullable: true })
+  reactBuildFinishedAt?: Date;
 
   @CreateDateColumn()
   createdAt: Date;

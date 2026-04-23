@@ -6,7 +6,7 @@ import { useSidebarStore } from '@/store/sidebarStore';
 import api from '@/lib/api';
 import Button from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Sparkles, Send, Eye, Code, Monitor, Download, Maximize2, Minimize2, Paperclip, Wand2, Mic } from 'lucide-react';
+import { Sparkles, Send, Eye, Code, Monitor, Download, Maximize2, Minimize2, Paperclip, Wand2, Mic, RotateCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import WebsitePreview from '@/components/WebsitePreview';
 import { GeneratingLoader } from '@/components/GeneratingLoader';
@@ -86,6 +86,10 @@ interface GeneratedWebsite {
   v0ChatId?: string;
   /** Hosted preview iframe URL from v0 (`demo` / `latestVersion.demoUrl`). */
   v0DemoUrl?: string;
+  /** React artifact preview URL from build worker (local Phase 1). */
+  reactArtifactUrl?: string;
+  reactBuildStatus?: 'queued' | 'building' | 'ready' | 'failed';
+  reactBuildLog?: string;
   /** Last sync edit: v0-clone thread continuation vs legacy full-site create. */
   editV0Path?: 'sendMessage' | 'create_fallback';
   createdAt: string;
@@ -116,6 +120,7 @@ const Dashboard = () => {
   /** Add-on prompt for editing the current website in the same chat */
   const [addOnPrompt, setAddOnPrompt] = useState('');
   const [editLoading, setEditLoading] = useState(false);
+  const [rebuildLoading, setRebuildLoading] = useState(false);
 
   const voice = useVoiceSynthesis();
 
@@ -218,6 +223,9 @@ const Dashboard = () => {
           viteConfig: data.viteConfig,
           v0ChatId: data.v0ChatId,
           v0DemoUrl: data.v0DemoUrl,
+          reactArtifactUrl: data.reactArtifactUrl,
+          reactBuildStatus: data.reactBuildStatus,
+          reactBuildLog: data.reactBuildLog,
           createdAt: data.createdAt,
         });
         setPrompt(data.prompt || '');
@@ -254,6 +262,47 @@ const Dashboard = () => {
     };
     fetchStats();
   }, [generatedWebsite]);
+
+  // React build pipeline polling: keep refreshing until artifact is ready/failed.
+  useEffect(() => {
+    if (!generatedWebsite?.id) return;
+    if (generatedWebsite.framework !== 'react') return;
+    if (generatedWebsite.reactBuildStatus === 'ready' || generatedWebsite.reactBuildStatus === 'failed') return;
+
+    let cancelled = false;
+    const websiteId = generatedWebsite.id;
+
+    const poll = async () => {
+      try {
+        const res = await api.get(`/website/${websiteId}`);
+        if (cancelled) return;
+        const data = res.data;
+        console.log('[ReactPreviewPoll] status tick:', {
+          websiteId,
+          reactBuildStatus: data.reactBuildStatus || null,
+          reactArtifactUrl: data.reactArtifactUrl || null,
+        });
+        setGeneratedWebsite((prev) => {
+          if (!prev || prev.id !== websiteId) return prev;
+          return {
+            ...prev,
+            ...data,
+            id: data.id || prev.id,
+            framework: inferFrameworkFromWebsite(data),
+          };
+        });
+      } catch {
+        console.warn('[ReactPreviewPoll] status fetch failed, retrying...', { websiteId });
+      }
+    };
+
+    void poll();
+    const timer = setInterval(poll, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [generatedWebsite?.id, generatedWebsite?.framework, generatedWebsite?.reactBuildStatus]);
 
   // Format JSON code with proper indentation
   const formatJson = (jsonString: string): string => {
@@ -580,6 +629,31 @@ const Dashboard = () => {
       alert(msg);
     } finally {
       setEditLoading(false);
+    }
+  };
+
+  const handleRebuildPreview = async () => {
+    if (!generatedWebsite?.id || rebuildLoading) return;
+    setRebuildLoading(true);
+    try {
+      await api.post(`/website/${generatedWebsite.id}/rebuild-preview`);
+      const res = await api.get(`/website/${generatedWebsite.id}`);
+      const data = res.data;
+      setGeneratedWebsite((prev) =>
+        prev
+          ? {
+              ...prev,
+              ...data,
+              id: data.id || prev.id,
+              framework: inferFrameworkFromWebsite(data),
+            }
+          : prev,
+      );
+    } catch (error) {
+      console.error('Failed to rebuild preview:', error);
+      alert('Failed to rebuild preview. Please try again.');
+    } finally {
+      setRebuildLoading(false);
     }
   };
 
@@ -928,12 +1002,23 @@ const Dashboard = () => {
                 </div>
                 <div className="flex items-center gap-2 text-sm">
                   {(() => {
-                    const hostedV0 = !!(generatedWebsite?.v0DemoUrl && !showCodeView);
+                    const hostedPreview = !!(
+                      (generatedWebsite?.v0DemoUrl || generatedWebsite?.reactArtifactUrl) &&
+                      !showCodeView
+                    );
+                    const isReactFramework = generatedWebsite?.framework === 'react';
                     const previewReady =
                       !!generatedWebsite &&
                       !showCodeView &&
-                      (hostedV0 ||
-                        !!(generatedWebsite.components?.length || generatedWebsite.viteConfig?.mainJsx || generatedWebsite.viteConfig?.mainJs || generatedWebsite.htmlCode));
+                      ((isReactFramework && hostedPreview) ||
+                        (!isReactFramework &&
+                          (hostedPreview ||
+                            !!(generatedWebsite.components?.length || generatedWebsite.viteConfig?.mainJsx || generatedWebsite.viteConfig?.mainJs || generatedWebsite.htmlCode))));
+                    const isReactBuildPending =
+                      generatedWebsite?.framework === 'react' &&
+                      (generatedWebsite?.reactBuildStatus === 'queued' ||
+                        generatedWebsite?.reactBuildStatus === 'building') &&
+                      !generatedWebsite?.reactArtifactUrl;
                     return (
                       <>
                         {previewReady ? (
@@ -943,10 +1028,12 @@ const Dashboard = () => {
                         )}
                         <span className={previewReady ? 'text-foreground font-medium' : 'text-muted-foreground'}>
                           {previewReady
-                            ? hostedV0
-                              ? 'Preview ready (v0 hosted)'
+                            ? hostedPreview
+                              ? 'Preview ready (hosted)'
                               : 'Preview ready'
-                            : 'Rendering preview...'}
+                            : isReactBuildPending
+                              ? 'Building React preview...'
+                              : 'Rendering preview...'}
                         </span>
                       </>
                     );
@@ -976,6 +1063,19 @@ const Dashboard = () => {
                   </CardTitle>
                   {generatedWebsite && (
                     <div className="flex items-center gap-2">
+                      {generatedWebsite.framework === 'react' && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handleRebuildPreview}
+                          disabled={rebuildLoading}
+                          className="gap-2"
+                          title="Rebuild React preview from saved code (no extra v0 credits)"
+                        >
+                          <RotateCw className={`h-4 w-4 ${rebuildLoading ? 'animate-spin' : ''}`} />
+                          {rebuildLoading ? 'Rebuilding...' : 'Rebuild Preview'}
+                        </Button>
+                      )}
                       <Button
                         variant="outline"
                         size="sm"
@@ -1427,17 +1527,53 @@ const Dashboard = () => {
                       </div>
                     ) : (
                       <div className="flex-1 overflow-auto h-full flex flex-col min-h-[600px] min-w-0">
-                        <WebsitePreview
-                          html={generatedWebsite.htmlCode}
-                          css={generatedWebsite.cssCode}
-                          js={generatedWebsite.jsCode}
-                          components={generatedWebsite.components}
-                          viteConfig={generatedWebsite.viteConfig}
-                          websiteName={generatedWebsite.websiteName}
-                          v0DemoUrl={generatedWebsite.v0DemoUrl}
-                          prompt={generatedWebsite.prompt}
-                          className="h-full min-h-[600px]"
-                        />
+                        {generatedWebsite.framework === 'react' &&
+                        !generatedWebsite.reactArtifactUrl &&
+                        !generatedWebsite.v0DemoUrl ? (
+                          <div className="h-full min-h-[600px] border rounded-xl p-6 bg-muted/20 overflow-auto">
+                            <h3 className="text-lg font-semibold mb-2">React preview is being prepared</h3>
+                            <p className="text-sm text-muted-foreground mb-3">
+                              We now use build artifacts for React consistency, so inline Babel preview is disabled.
+                            </p>
+                            <p className="text-sm">
+                              Status:{' '}
+                              <span className="font-medium">
+                                {generatedWebsite.reactBuildStatus || 'queued'}
+                              </span>
+                            </p>
+                            <div className="mt-4">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={handleRebuildPreview}
+                                disabled={rebuildLoading}
+                                className="gap-2"
+                                title="Rebuild React preview from saved code (no extra v0 credits)"
+                              >
+                                <RotateCw className={`h-4 w-4 ${rebuildLoading ? 'animate-spin' : ''}`} />
+                                {rebuildLoading ? 'Rebuilding...' : 'Rebuild Preview'}
+                              </Button>
+                            </div>
+                            {generatedWebsite.reactBuildStatus === 'failed' && generatedWebsite.reactBuildLog ? (
+                              <pre className="mt-4 text-xs bg-background border rounded p-3 whitespace-pre-wrap">
+                                {generatedWebsite.reactBuildLog.slice(-4000)}
+                              </pre>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <WebsitePreview
+                            html={generatedWebsite.htmlCode}
+                            css={generatedWebsite.cssCode}
+                            js={generatedWebsite.jsCode}
+                            components={generatedWebsite.components}
+                            viteConfig={generatedWebsite.viteConfig}
+                            websiteName={generatedWebsite.websiteName}
+                            v0DemoUrl={generatedWebsite.v0DemoUrl}
+                            artifactUrl={generatedWebsite.reactArtifactUrl}
+                            prompt={generatedWebsite.prompt}
+                            className="h-full min-h-[600px]"
+                          />
+                        )}
                       </div>
                     )}
                   </div>

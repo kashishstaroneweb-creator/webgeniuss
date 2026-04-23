@@ -12,6 +12,7 @@ import { Transform } from 'stream';
 import type { Response } from 'express';
 import axios, { type AxiosResponse } from 'axios';
 import { CodeSanitizer } from './code-sanitizer';
+import { ReactPreviewBuildService } from './react-preview-build.service';
 
 type WebsiteFramework = 'next' | 'react';
 
@@ -49,6 +50,7 @@ export class WebsiteService {
     private websiteRepository: Repository<Website>,
     @InjectRepository(PromptHistory)
     private promptRepository: Repository<PromptHistory>,
+    private reactPreviewBuildService: ReactPreviewBuildService,
   ) {
     const v0Key = WebsiteService.normalizeV0ApiKey(process.env.V0_API_KEY);
     const legacyAlias = WebsiteService.normalizeV0ApiKey(process.env.OPENAI_API_KEY);
@@ -334,16 +336,65 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
   }
 
   /** Sanitize, persist DB + disk — same path as POST /website/generate after v0 content is known. */
+  private tryRecoverStructuredProjectFromMain(main: string): { components: any[]; viteConfig: any } | null {
+    if (!main || typeof main !== 'string') return null;
+    if (!/projectData\s*=\s*\{/.test(main)) return null;
+
+    const components: Array<{
+      name: string;
+      type: 'component' | 'page' | 'util';
+      path: string;
+      code: string;
+      language: 'html' | 'css' | 'js' | 'jsx';
+    }> = [];
+
+    const componentsBlockMatch = main.match(/components\s*:\s*\[([\s\S]*?)\]\s*,\s*viteConfig\s*:/);
+    if (componentsBlockMatch?.[1]) {
+      const block = componentsBlockMatch[1];
+      const itemRegex =
+        /name\s*:\s*"([^"]+)"[\s\S]*?type\s*:\s*"([^"]+)"[\s\S]*?path\s*:\s*"([^"]+)"[\s\S]*?language\s*:\s*"([^"]+)"[\s\S]*?code\s*:\s*`([\s\S]*?)`/g;
+      let m: RegExpExecArray | null;
+      while ((m = itemRegex.exec(block)) !== null) {
+        const typeRaw = (m[2] || 'component').toLowerCase();
+        const langRaw = (m[4] || 'jsx').toLowerCase();
+        components.push({
+          name: m[1] || 'Component',
+          type: typeRaw === 'page' || typeRaw === 'util' ? (typeRaw as any) : 'component',
+          path: m[3] || `src/components/${m[1] || 'Component'}.jsx`,
+          code: m[5] || '',
+          language: langRaw === 'html' || langRaw === 'css' || langRaw === 'js' || langRaw === 'jsx' ? (langRaw as any) : 'jsx',
+        });
+      }
+    }
+
+    const viteConfig: Record<string, string> = {};
+    const viteBlockMatch = main.match(/viteConfig\s*:\s*\{([\s\S]*?)\}\s*[,}]/);
+    if (viteBlockMatch?.[1]) {
+      const vb = viteBlockMatch[1];
+      const fieldRegex = /(packageJson|viteConfig|indexHtml|mainJsx|mainJs|styleCss)\s*:\s*`([\s\S]*?)`/g;
+      let fm: RegExpExecArray | null;
+      while ((fm = fieldRegex.exec(vb)) !== null) {
+        viteConfig[fm[1]] = fm[2] || '';
+      }
+    }
+
+    if (components.length === 0 && !viteConfig.mainJsx && !viteConfig.mainJs) {
+      return null;
+    }
+    return { components, viteConfig };
+  }
+
   private async persistWebsiteAfterV0Generation(args: {
     userId: string;
     websiteName: string;
     prompt: string;
+    framework: WebsiteFramework;
     responseContent: string;
     websiteCode: any;
     v0ChatId?: string;
     v0DemoUrl?: string;
   }) {
-    const { userId, websiteName, prompt, responseContent, websiteCode, v0ChatId, v0DemoUrl } = args;
+    const { userId, websiteName, prompt, framework, responseContent, websiteCode, v0ChatId, v0DemoUrl } = args;
 
     // Sanitize JSX and fix images: validate image URLs (HEAD), replace 404s with a relevant image (Unsplash by site theme, else Picsum), then replace imgur
     const getPlaceholderUrl = await this.buildPlaceholderUrlGetter(websiteName || '', prompt);
@@ -398,6 +449,20 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       if (websiteCode.viteConfig.mainJs) websiteCode.viteConfig.mainJs = stripPlaceholders(websiteCode.viteConfig.mainJs);
     }
 
+    // Recovery path: some model outputs wrap the whole project as `const projectData = { components, viteConfig }` inside mainJsx.
+    // Extract and normalize it back into our expected top-level shape before persistence/build.
+    if ((websiteCode?.components?.length ?? 0) === 0 && websiteCode?.viteConfig?.mainJsx) {
+      const recovered = this.tryRecoverStructuredProjectFromMain(websiteCode.viteConfig.mainJsx);
+      if (recovered) {
+        websiteCode.components = recovered.components;
+        websiteCode.viteConfig = { ...(websiteCode.viteConfig || {}), ...(recovered.viteConfig || {}) };
+        console.log('WebsiteService.persistWebsiteAfterV0Generation - Recovered wrapped projectData shape:', {
+          recoveredComponents: recovered.components.length,
+          hasRecoveredMain: !!(recovered.viteConfig?.mainJsx || recovered.viteConfig?.mainJs),
+        });
+      }
+    }
+
     // Extract component-based structure; legacy html/css/js only when the model returns them (no placeholder masking)
     const components = websiteCode.components || [];
     const viteConfig = websiteCode.viteConfig || null;
@@ -448,6 +513,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     const website = this.websiteRepository.create({
       userId,
       websiteName,
+      framework,
       prompt,
       htmlCode: storeAsVite ? '' : htmlCode,
       cssCode: storeAsVite ? '' : cssCode,
@@ -456,6 +522,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       viteConfig: viteConfig || undefined,
       v0ChatId,
       v0DemoUrl: v0DemoUrl || undefined,
+      reactBuildStatus: framework === 'react' ? 'queued' : undefined,
     });
 
     const savedWebsite = await this.websiteRepository.save(website);
@@ -470,6 +537,13 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
 
     // Preview: v0 hosted URL when present, else client-side WebsitePreview from DB payload — no server disk.
 
+    if (framework === 'react') {
+      console.log('WebsiteService.persistWebsiteAfterV0Generation - queueing React build:', {
+        websiteId: savedWebsite.id.toString(),
+        framework,
+      });
+      void this.reactPreviewBuildService.enqueue(savedWebsite.id.toString());
+    }
     console.log('WebsiteService.persistWebsiteAfterV0Generation - Success, saved website ID:', savedWebsite.id);
     return {
       ...savedWebsite,
@@ -505,6 +579,12 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       const systemPrompt = this.getV0WebsiteSystemPrompt(resolvedFramework);
 
       const userPrompt = this.buildV0GenerationUserMessage(prompt, websiteName, resolvedFramework);
+      console.log('WebsiteService.generateWebsite - outbound v0 payload preview:', {
+        framework: resolvedFramework,
+        systemLength: systemPrompt.length,
+        messageLength: userPrompt.length,
+        messagePreview: userPrompt.substring(0, 1200),
+      });
 
       console.log('WebsiteService.generateWebsite - Original prompt length:', prompt.length);
       console.log('WebsiteService.generateWebsite - Final message length:', userPrompt.length);
@@ -529,6 +609,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
         userId,
         websiteName,
         prompt,
+        framework: resolvedFramework,
         responseContent,
         websiteCode,
         v0ChatId,
@@ -649,7 +730,14 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
   /**
    * Load finalized v0 chat by id, then run the same sanitize → persist path as POST /website/generate.
    */
-  async finalizeWebsiteFromV0Chat(userId: string, chatId: string, websiteName: string, prompt: string) {
+  async finalizeWebsiteFromV0Chat(
+    userId: string,
+    chatId: string,
+    websiteName: string,
+    prompt: string,
+    framework?: string,
+  ) {
+    const resolvedFramework = this.normalizeFramework(framework);
     let chat = await this.getV0ChatByIdRest(chatId);
     const r = chat as ChatDetail & { chat?: { id?: string } };
     if (!chat.id && r.chat?.id) {
@@ -696,6 +784,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       userId,
       websiteName,
       prompt,
+      framework: resolvedFramework,
       responseContent,
       websiteCode,
       v0ChatId: resolvedChatId,
@@ -716,6 +805,12 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     const resolvedFramework = this.normalizeFramework(framework);
     const systemPrompt = this.getV0WebsiteSystemPrompt(resolvedFramework);
     const userMessage = this.buildV0GenerationUserMessage(prompt, websiteName, resolvedFramework);
+    console.log('WebsiteService.pipeV0GenerationStream - outbound v0 payload preview:', {
+      framework: resolvedFramework,
+      systemLength: systemPrompt.length,
+      messageLength: userMessage.length,
+      messagePreview: userMessage.substring(0, 1200),
+    });
     const modelConfiguration = this.getV0ModelConfiguration();
     const body: Record<string, unknown> = {
       message: userMessage,
@@ -840,7 +935,13 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
           res.end();
           return;
         }
-        const saved = await this.finalizeWebsiteFromV0Chat(userId, chatIdCaptured, websiteName, prompt);
+        const saved = await this.finalizeWebsiteFromV0Chat(
+          userId,
+          chatIdCaptured,
+          websiteName,
+          prompt,
+          resolvedFramework,
+        );
         writeSseAndEnd('website-saved', saved);
         res.end();
       } catch (e: unknown) {
@@ -1209,7 +1310,22 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     website.prompt = (website.prompt || '') + '\n[Edit] ' + editPrompt;
     website.v0ChatId = newV0ChatId;
     website.v0DemoUrl = v0DemoUrl || undefined;
+    if (website.framework === 'react') {
+      website.reactBuildStatus = 'queued';
+      website.reactBuildLog = undefined;
+      website.reactArtifactUrl = undefined;
+      website.reactBuildId = undefined;
+      website.reactBuildStartedAt = undefined;
+      website.reactBuildFinishedAt = undefined;
+    }
     const savedWebsite = await this.websiteRepository.save(website);
+    if (savedWebsite.framework === 'react') {
+      console.log('WebsiteService.saveWebsiteEditFromFetchedCode - re-queueing React build after edit:', {
+        websiteId: savedWebsite.id.toString(),
+        status: savedWebsite.reactBuildStatus || null,
+      });
+      void this.reactPreviewBuildService.enqueue(savedWebsite.id.toString());
+    }
 
     console.log('WebsiteService.saveWebsiteEditFromFetchedCode - Success, website ID:', websiteId);
     return {
@@ -1249,6 +1365,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       await this.websiteRepository.save(website);
     }
     const resolvedFramework = this.normalizeFramework(framework);
+    website.framework = resolvedFramework;
 
     const v0ChatIdTrimmed = website.v0ChatId?.trim();
     const editV0Path = v0ChatIdTrimmed ? ('sendMessage' as const) : ('create_fallback' as const);
@@ -3007,6 +3124,59 @@ DESIGN (MANDATORY - PRODUCTION-READY):
     return {
       ...website,
       id: website.id.toString(),
+    };
+  }
+
+  async rebuildReactPreview(websiteId: string, userId: string) {
+    const website = await this.websiteRepository.findOne({
+      where: { _id: new ObjectId(websiteId) } as any,
+    });
+    if (!website) {
+      const err = new Error('Website not found or access denied') as Error & { status?: number };
+      err.status = 404;
+      throw err;
+    }
+    const isOwner = website.userId === userId;
+    const isDefaultTestUserSite = website.userId === WebsiteService.DEFAULT_TEST_USER_ID;
+    if (!isOwner && !isDefaultTestUserSite) {
+      const err = new Error('Website not found or access denied') as Error & { status?: number };
+      err.status = 404;
+      throw err;
+    }
+    if (isDefaultTestUserSite && userId !== WebsiteService.DEFAULT_TEST_USER_ID) {
+      website.userId = userId;
+    }
+
+    const inferredFramework =
+      website.framework === 'react' || website.framework === 'next'
+        ? website.framework
+        : ((website.components?.length ?? 0) > 0 || !!(website.viteConfig?.mainJsx || website.viteConfig?.mainJs))
+            ? 'react'
+            : 'next';
+    website.framework = inferredFramework;
+    if (inferredFramework !== 'react') {
+      const err = new Error('Preview rebuild is only supported for React websites.') as Error & { status?: number };
+      err.status = 422;
+      throw err;
+    }
+
+    website.reactBuildStatus = 'queued';
+    website.reactBuildLog = undefined;
+    website.reactArtifactUrl = undefined;
+    website.reactBuildId = undefined;
+    website.reactBuildStartedAt = undefined;
+    website.reactBuildFinishedAt = undefined;
+    const saved = await this.websiteRepository.save(website);
+    console.log('WebsiteService.rebuildReactPreview - queueing rebuild:', {
+      websiteId: saved.id.toString(),
+      framework: saved.framework,
+    });
+    void this.reactPreviewBuildService.enqueue(saved.id.toString());
+    return {
+      id: saved.id.toString(),
+      websiteId: saved.id.toString(),
+      reactBuildStatus: saved.reactBuildStatus,
+      message: 'React preview rebuild queued',
     };
   }
 
