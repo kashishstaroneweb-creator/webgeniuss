@@ -5,15 +5,23 @@ import { ObjectId } from 'mongodb';
 import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as https from 'https';
+import * as crypto from 'crypto';
 import { Website } from '../entities/website.entity';
 
 type BuildStatus = 'queued' | 'building' | 'ready' | 'failed';
+type PreviewStorageMode = 'local' | 'r2';
 
 @Injectable()
 export class ReactPreviewBuildService {
   private readonly queue: string[] = [];
   private readonly queued = new Set<string>();
   private isDraining = false;
+
+  private getStorageMode(): PreviewStorageMode {
+    const raw = (process.env.REACT_PREVIEW_STORAGE_MODE || 'local').trim().toLowerCase();
+    return raw === 'r2' ? 'r2' : 'local';
+  }
 
   constructor(
     @InjectRepository(Website)
@@ -118,15 +126,15 @@ export class ReactPreviewBuildService {
         throw new Error('Build completed but dist/index.html was not found.');
       }
 
-      await fs.promises.rm(artifactDir, { recursive: true, force: true });
-      await fs.promises.mkdir(path.dirname(artifactDir), { recursive: true });
-      await fs.promises.cp(distDir, artifactDir, { recursive: true, force: true });
-
-      const publicBase = (process.env.BACKEND_PUBLIC_BASE_URL || process.env.VITE_API_URL || 'http://localhost:3000').replace(/\/+$/, '');
-      const artifactUrl = `${publicBase}/preview-artifacts/${websiteId}/${buildId}/`;
+      const storageMode = this.getStorageMode();
+      const artifactUrl =
+        storageMode === 'r2'
+          ? await this.publishDistToR2(distDir, websiteId, buildId)
+          : await this.publishDistToLocal(distDir, artifactDir, websiteId, buildId);
       console.log('ReactPreviewBuildService.processOne - build success:', {
         websiteId,
         buildId,
+        storageMode,
         artifactUrl,
       });
 
@@ -208,7 +216,7 @@ export class ReactPreviewBuildService {
     const viteConfig = this.normalizeViteConfig(vite.viteConfig);
     const indexHtml = vite.indexHtml || this.defaultIndexHtml(site.websiteName || 'React Preview');
     const mainJsxRaw = vite.mainJsx || vite.mainJs || this.defaultMainJsx(site.components || []);
-    const mainJsx = this.injectPreviewRouterBasename(mainJsxRaw);
+    const mainJsx = this.injectPreviewMessagingBridge(this.injectPreviewRouterBasename(mainJsxRaw));
     const styleCss = vite.styleCss || '';
 
     await this.writeFileSafe(workspaceDir, 'package.json', packageJson);
@@ -222,6 +230,208 @@ export class ReactPreviewBuildService {
       if (!relPath) continue;
       await this.writeFileSafe(workspaceDir, relPath, c.code || '');
     }
+  }
+
+  private async publishDistToLocal(
+    distDir: string,
+    artifactDir: string,
+    websiteId: string,
+    buildId: string,
+  ): Promise<string> {
+    await fs.promises.rm(artifactDir, { recursive: true, force: true });
+    await fs.promises.mkdir(path.dirname(artifactDir), { recursive: true });
+    await fs.promises.cp(distDir, artifactDir, { recursive: true, force: true });
+    const publicBase = (
+      process.env.BACKEND_PUBLIC_BASE_URL ||
+      process.env.VITE_API_URL ||
+      'http://localhost:3000'
+    ).replace(/\/+$/, '');
+    const url = `${publicBase}/preview-artifacts/${websiteId}/${buildId}/`;
+    console.log('ReactPreviewBuildService.publishDistToLocal - published:', { websiteId, buildId, url });
+    return url;
+  }
+
+  private async publishDistToR2(distDir: string, websiteId: string, buildId: string): Promise<string> {
+    const accountId = (process.env.R2_ACCOUNT_ID || '').trim();
+    const bucket = (process.env.R2_BUCKET || '').trim();
+    const accessKeyId = (process.env.R2_ACCESS_KEY_ID || '').trim();
+    const secretAccessKey = (process.env.R2_SECRET_ACCESS_KEY || '').trim();
+    const publicBaseRaw = (process.env.R2_PUBLIC_BASE_URL || '').trim();
+
+    if (!accountId || !bucket || !accessKeyId || !secretAccessKey || !publicBaseRaw) {
+      throw new Error(
+        'R2 mode enabled but env is incomplete. Required: R2_ACCOUNT_ID, R2_BUCKET, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_PUBLIC_BASE_URL',
+      );
+    }
+
+    const files = await this.listFilesRecursive(distDir);
+    const prefix = `${websiteId}/${buildId}`;
+    for (const abs of files) {
+      const rel = path.relative(distDir, abs).replace(/\\/g, '/');
+      const key = `${prefix}/${rel}`;
+      const body = await fs.promises.readFile(abs);
+      const contentType = this.getContentTypeByPath(rel);
+      await this.putObjectToR2({
+        accountId,
+        bucket,
+        accessKeyId,
+        secretAccessKey,
+        key,
+        body,
+        contentType,
+      });
+    }
+
+    const publicBase = publicBaseRaw.replace(/\/+$/, '');
+    const url = `${publicBase}/${prefix}/`;
+    console.log('ReactPreviewBuildService.publishDistToR2 - published:', {
+      websiteId,
+      buildId,
+      fileCount: files.length,
+      url,
+    });
+    return url;
+  }
+
+  private async listFilesRecursive(root: string): Promise<string[]> {
+    const out: string[] = [];
+    const walk = async (dir: string) => {
+      const items = await fs.promises.readdir(dir, { withFileTypes: true });
+      for (const item of items) {
+        const abs = path.join(dir, item.name);
+        if (item.isDirectory()) {
+          await walk(abs);
+        } else if (item.isFile()) {
+          out.push(abs);
+        }
+      }
+    };
+    await walk(root);
+    return out;
+  }
+
+  private getContentTypeByPath(filePath: string): string {
+    const p = filePath.toLowerCase();
+    if (p.endsWith('.html')) return 'text/html; charset=utf-8';
+    if (p.endsWith('.css')) return 'text/css; charset=utf-8';
+    if (p.endsWith('.js')) return 'application/javascript; charset=utf-8';
+    if (p.endsWith('.json')) return 'application/json; charset=utf-8';
+    if (p.endsWith('.svg')) return 'image/svg+xml';
+    if (p.endsWith('.png')) return 'image/png';
+    if (p.endsWith('.jpg') || p.endsWith('.jpeg')) return 'image/jpeg';
+    if (p.endsWith('.webp')) return 'image/webp';
+    if (p.endsWith('.ico')) return 'image/x-icon';
+    if (p.endsWith('.map')) return 'application/json; charset=utf-8';
+    return 'application/octet-stream';
+  }
+
+  private sha256Hex(data: Buffer | string): string {
+    return crypto.createHash('sha256').update(data).digest('hex');
+  }
+
+  private hmac(key: Buffer | string, data: string): Buffer {
+    return crypto.createHmac('sha256', key).update(data, 'utf8').digest();
+  }
+
+  private encodeRfc3986PathSegment(seg: string): string {
+    return encodeURIComponent(seg).replace(/[!'()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+  }
+
+  private buildCanonicalUri(bucket: string, key: string): string {
+    const parts = [bucket, ...key.split('/').filter(Boolean)];
+    return '/' + parts.map((s) => this.encodeRfc3986PathSegment(s)).join('/');
+  }
+
+  private async putObjectToR2(args: {
+    accountId: string;
+    bucket: string;
+    accessKeyId: string;
+    secretAccessKey: string;
+    key: string;
+    body: Buffer;
+    contentType: string;
+  }): Promise<void> {
+    const { accountId, bucket, accessKeyId, secretAccessKey, key, body, contentType } = args;
+    const host = `${accountId}.r2.cloudflarestorage.com`;
+    const method = 'PUT';
+    const service = 's3';
+    const region = 'auto';
+    const now = new Date();
+    const y = now.getUTCFullYear();
+    const m = String(now.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(now.getUTCDate()).padStart(2, '0');
+    const hh = String(now.getUTCHours()).padStart(2, '0');
+    const mm = String(now.getUTCMinutes()).padStart(2, '0');
+    const ss = String(now.getUTCSeconds()).padStart(2, '0');
+    const dateStamp = `${y}${m}${d}`;
+    const amzDate = `${dateStamp}T${hh}${mm}${ss}Z`;
+    const canonicalUri = this.buildCanonicalUri(bucket, key);
+    const payloadHash = this.sha256Hex(body);
+    const canonicalHeaders =
+      `content-type:${contentType}\n` +
+      `host:${host}\n` +
+      `x-amz-content-sha256:${payloadHash}\n` +
+      `x-amz-date:${amzDate}\n`;
+    const signedHeaders = 'content-type;host;x-amz-content-sha256;x-amz-date';
+    const canonicalRequest =
+      `${method}\n` +
+      `${canonicalUri}\n` +
+      `\n` +
+      `${canonicalHeaders}\n` +
+      `${signedHeaders}\n` +
+      `${payloadHash}`;
+    const credentialScope = `${dateStamp}/${region}/${service}/aws4_request`;
+    const stringToSign =
+      `AWS4-HMAC-SHA256\n` +
+      `${amzDate}\n` +
+      `${credentialScope}\n` +
+      `${this.sha256Hex(canonicalRequest)}`;
+    const kDate = this.hmac(`AWS4${secretAccessKey}`, dateStamp);
+    const kRegion = this.hmac(kDate, region);
+    const kService = this.hmac(kRegion, service);
+    const kSigning = this.hmac(kService, 'aws4_request');
+    const signature = crypto.createHmac('sha256', kSigning).update(stringToSign, 'utf8').digest('hex');
+    const authorization =
+      `AWS4-HMAC-SHA256 Credential=${accessKeyId}/${credentialScope}, ` +
+      `SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+    await new Promise<void>((resolve, reject) => {
+      const req = https.request(
+        {
+          protocol: 'https:',
+          hostname: host,
+          method,
+          path: canonicalUri,
+          headers: {
+            Host: host,
+            'Content-Type': contentType,
+            'Content-Length': body.length,
+            'x-amz-date': amzDate,
+            'x-amz-content-sha256': payloadHash,
+            Authorization: authorization,
+          },
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+          res.on('end', () => {
+            const status = res.statusCode || 0;
+            if (status >= 200 && status < 300) {
+              resolve();
+              return;
+            }
+            reject(
+              new Error(
+                `R2 PUT failed (${status}) for key ${key}: ${Buffer.concat(chunks).toString('utf8').slice(0, 500)}`,
+              ),
+            );
+          });
+        },
+      );
+      req.on('error', reject);
+      req.write(body);
+      req.end();
+    });
   }
 
   private sanitizeRelativePath(input: string): string | null {
@@ -443,5 +653,85 @@ export class ReactPreviewBuildService {
     out = out.replace(/<BrowserRouter(\s*)>/, '<BrowserRouter basename={__previewBasename}$1>');
     console.log('ReactPreviewBuildService.injectPreviewRouterBasename - injected basename helper');
     return out;
+  }
+
+  private injectPreviewMessagingBridge(code: string): string {
+    if (!code || typeof code !== 'string') return code;
+    if (code.includes('__WEBGENIUS_PREVIEW_BRIDGE__')) return code;
+    const snippet = `
+
+/* __WEBGENIUS_PREVIEW_BRIDGE__ */
+if (typeof window !== 'undefined') {
+  (function () {
+    var marker = '/preview-artifacts/';
+    function computeBase() {
+      var p = (window.location && window.location.pathname) || '/';
+      var idx = p.indexOf(marker);
+      if (idx === -1) return '/';
+      var after = p.slice(idx + marker.length);
+      var parts = after.split('/').filter(Boolean);
+      if (parts.length < 2) return '/';
+      return marker + parts[0] + '/' + parts[1];
+    }
+    function normalizePath(input) {
+      var s = typeof input === 'string' ? input.trim() : '/';
+      if (!s) s = '/';
+      if (!s.startsWith('/')) s = '/' + s;
+      return s;
+    }
+    function currentRoutePath() {
+      var base = computeBase();
+      var p = (window.location && window.location.pathname) || '/';
+      if (base !== '/' && p.startsWith(base)) {
+        var rest = p.slice(base.length);
+        return rest || '/';
+      }
+      return p || '/';
+    }
+    function publishRoute() {
+      try {
+        if (window.parent && window.parent.postMessage) {
+          window.parent.postMessage({ type: 'PREVIEW_ROUTE_CHANGE', path: currentRoutePath() }, '*');
+        }
+      } catch (err) {}
+    }
+    function wrapHistoryMethod(name) {
+      try {
+        var original = window.history && window.history[name];
+        if (typeof original !== 'function') return;
+        window.history[name] = function () {
+          // eslint-disable-next-line prefer-rest-params
+          var ret = original.apply(this, arguments);
+          publishRoute();
+          return ret;
+        };
+      } catch (err) {}
+    }
+    wrapHistoryMethod('pushState');
+    wrapHistoryMethod('replaceState');
+    window.addEventListener('message', function (event) {
+      var data = event && event.data;
+      if (!data || data.type !== 'PREVIEW_NAVIGATE') return;
+      var next = normalizePath(data.path);
+      var base = computeBase();
+      var target = base === '/' ? next : base + (next === '/' ? '' : next);
+      if (window.location.pathname !== target) {
+        window.history.pushState({}, '', target);
+        window.dispatchEvent(new PopStateEvent('popstate'));
+      }
+      publishRoute();
+    });
+    window.addEventListener('popstate', publishRoute);
+    window.addEventListener('hashchange', publishRoute);
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', publishRoute);
+    } else {
+      publishRoute();
+    }
+  })();
+}
+`;
+    console.log('ReactPreviewBuildService.injectPreviewMessagingBridge - injected preview route bridge');
+    return code + snippet;
   }
 }

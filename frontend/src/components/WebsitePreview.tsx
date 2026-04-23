@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Maximize2, Minimize2, RotateCw, Globe } from 'lucide-react';
 import Button from './ui/Button';
@@ -205,6 +205,7 @@ const WebsitePreview = ({
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [previewPath, setPreviewPath] = useState('/');
+  const routeListIdRef = useRef(`preview-route-options-${Math.random().toString(36).slice(2, 8)}`);
   const hostedPreviewUrlRaw = artifactUrl || v0DemoUrl;
   const normalizedHostedUrl = hostedPreviewUrlRaw
     ? hostedPreviewUrlRaw.replace(/\/index\.html(\?.*)?$/i, '/')
@@ -233,6 +234,20 @@ const WebsitePreview = ({
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
   }, []);
+
+  const routeSuggestions = useMemo(() => {
+    const out = new Set<string>();
+    out.add('/');
+    const main = viteConfig?.mainJsx || viteConfig?.mainJs || '';
+    const routeRegex = /path\s*=\s*["'`]([^"'`]+)["'`]/g;
+    let m: RegExpExecArray | null;
+    while ((m = routeRegex.exec(main)) !== null) {
+      const p = (m[1] || '').trim();
+      if (!p) continue;
+      out.add(p.startsWith('/') ? p : `/${p}`);
+    }
+    return Array.from(out);
+  }, [viteConfig?.mainJsx, viteConfig?.mainJs]);
 
   const handleNavigate = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
@@ -1354,6 +1369,16 @@ window.__PREVIEW_PARAMS__ = JSON.parse('${placeholderParamsEscaped}');
   };
 
   const handleReload = () => {
+    setPreviewPath('/');
+    try {
+      iframeRef.current?.contentWindow?.postMessage({ type: 'PREVIEW_NAVIGATE', path: '/' }, '*');
+    } catch (err) {
+      // ignore cross-origin/postMessage timing errors
+    }
+    if (hostedPreviewUrl && iframeRef.current) {
+      iframeRef.current.src = hostedPreviewUrl;
+      return;
+    }
     loadIframeContent();
   };
 
@@ -1378,9 +1403,15 @@ window.__PREVIEW_PARAMS__ = JSON.parse('${placeholderParamsEscaped}');
                 value={previewPath}
                 onChange={(e) => setPreviewPath(e.target.value)}
                 onKeyDown={handleNavigate}
+                list={routeListIdRef.current}
                 className="flex-1 bg-transparent border-none focus:outline-none text-sm text-foreground/90 font-mono"
                 spellCheck={false}
               />
+              <datalist id={routeListIdRef.current}>
+                {routeSuggestions.map((route) => (
+                  <option key={route} value={route} />
+                ))}
+              </datalist>
             </div>
             <div className="flex gap-2 flex-shrink-0">
               <Button
@@ -1434,9 +1465,15 @@ window.__PREVIEW_PARAMS__ = JSON.parse('${placeholderParamsEscaped}');
             value={previewPath}
             onChange={(e) => setPreviewPath(e.target.value)}
             onKeyDown={handleNavigate}
+            list={routeListIdRef.current}
             className="flex-1 bg-transparent border-none focus:outline-none text-muted-foreground font-mono"
             spellCheck={false}
           />
+          <datalist id={routeListIdRef.current}>
+            {routeSuggestions.map((route) => (
+              <option key={route} value={route} />
+            ))}
+          </datalist>
         </div>
         <div className="flex gap-1.5 flex-shrink-0">
           <Button
