@@ -431,6 +431,47 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     return { components, viteConfig };
   }
 
+  private normalizeWebsiteCodeShape(raw: any): any {
+    if (raw == null) return raw;
+
+    if (typeof raw === 'string') {
+      const parsed = this.parseV0Response(raw) || this.extractCodeFromResponse(raw);
+      return parsed || { html: raw, css: '', js: '' };
+    }
+
+    if (typeof raw !== 'object') return raw;
+
+    const candidateStrings = [
+      raw.html,
+      raw.HTML,
+      raw.code,
+      raw.content,
+      raw.text,
+    ].filter((v) => typeof v === 'string') as string[];
+
+    for (const value of candidateStrings) {
+      const trimmed = value.trim();
+      if (!trimmed.startsWith('{') || !/"(?:html|HTML|css|CSS|js|JS|javascript)"/.test(trimmed)) continue;
+      const parsed = this.parseV0Response(trimmed) || this.extractCodeFromResponse(trimmed);
+      const hasStaticCode =
+        typeof parsed?.html === 'string' ||
+        typeof parsed?.HTML === 'string' ||
+        typeof parsed?.css === 'string' ||
+        typeof parsed?.CSS === 'string' ||
+        typeof parsed?.js === 'string' ||
+        typeof parsed?.JS === 'string' ||
+        typeof parsed?.javascript === 'string';
+      if (hasStaticCode) {
+        return {
+          ...raw,
+          ...parsed,
+        };
+      }
+    }
+
+    return raw;
+  }
+
   private async persistWebsiteAfterV0Generation(args: {
     userId: string;
     websiteName: string;
@@ -441,7 +482,8 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     v0ChatId?: string;
     v0DemoUrl?: string;
   }) {
-    const { userId, websiteName, prompt, framework, responseContent, websiteCode, v0ChatId, v0DemoUrl } = args;
+    const { userId, websiteName, prompt, framework, responseContent, v0ChatId, v0DemoUrl } = args;
+    const websiteCode = this.normalizeWebsiteCodeShape(args.websiteCode);
 
     // Sanitize JSX and fix images: validate image URLs (HEAD), replace 404s with a relevant image (Unsplash by site theme, else Picsum), then replace imgur
     const getPlaceholderUrl = await this.buildPlaceholderUrlGetter(websiteName || '', prompt);
@@ -1278,7 +1320,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
         demoUrl: v0DemoUrl || null,
       });
     }
-    let websiteCode = websiteCodeRaw;
+    let websiteCode = this.normalizeWebsiteCodeShape(websiteCodeRaw);
 
     const getPlaceholderUrl = await this.buildPlaceholderUrlGetter(website.websiteName || '', website.prompt || editPrompt);
     const sanitizeCode = (raw: string) =>
