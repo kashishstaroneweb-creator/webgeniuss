@@ -277,7 +277,8 @@ export class ReactPreviewBuildService {
     const viteConfig = this.normalizeViteConfig(vite.viteConfig);
     const indexHtml = vite.indexHtml || this.defaultIndexHtml(site.websiteName || 'React Preview');
     const mainJsxRaw = vite.mainJsx || vite.mainJs || this.defaultMainJsx(site.components || []);
-    const mainJsx = this.injectPreviewMessagingBridge(this.injectPreviewRouterBasename(mainJsxRaw));
+    const mainJsxWithImports = this.ensureEntryImports(mainJsxRaw, site.components || []);
+    const mainJsx = this.injectPreviewMessagingBridge(this.injectPreviewRouterBasename(mainJsxWithImports));
     const styleCss = vite.styleCss || '';
 
     await this.writeFileSafe(workspaceDir, 'package.json', packageJson);
@@ -675,6 +676,9 @@ export class ReactPreviewBuildService {
     if (/\bbase\s*:\s*['"`]\.\/['"`]/.test(s) || /\bbase\s*:\s*['"`]\.\/?['"`]/.test(s)) {
       return s;
     }
+    if (/\bbase\s*:\s*['"`][^'"`]*['"`]\s*,?/.test(s)) {
+      return s.replace(/\bbase\s*:\s*['"`][^'"`]*['"`]\s*,?/, "base: './',");
+    }
     if (s.includes('defineConfig({')) {
       s = s.replace('defineConfig({', "defineConfig({\n  base: './',");
       return s;
@@ -735,6 +739,56 @@ export class ReactPreviewBuildService {
       "ReactDOM.createRoot(document.getElementById('root')).render(<App />);",
       '',
     ].join('\n');
+  }
+
+  private ensureEntryImports(
+    code: string,
+    components: Array<{ name?: string; path?: string }>,
+  ): string {
+    if (!code || typeof code !== 'string') return code;
+    const imports: string[] = [];
+
+    if (/\bReactDOM\b/.test(code) && !/from\s+['"]react-dom\/client['"]/.test(code)) {
+      imports.push("import ReactDOM from 'react-dom/client';");
+    }
+
+    if (/\bReact\b/.test(code) && !/from\s+['"]react['"]/.test(code)) {
+      imports.push("import React from 'react';");
+    }
+
+    const alreadyImported = new Set<string>();
+    const defaultImportRegex = /import\s+([\w$]+)(?:\s*,\s*\{[^}]*\})?\s+from\s+['"][^'"]+['"]/g;
+    const namedImportRegex = /import\s+(?:[\w$]+\s*,\s*)?\{([^}]+)\}\s+from\s+['"][^'"]+['"]/g;
+    let match: RegExpExecArray | null;
+    while ((match = defaultImportRegex.exec(code)) !== null) {
+      alreadyImported.add(match[1]);
+    }
+    while ((match = namedImportRegex.exec(code)) !== null) {
+      match[1].split(',').forEach((part) => {
+        const name = part.trim().split(/\s+as\s+/i).pop()?.trim();
+        if (name) alreadyImported.add(name);
+      });
+    }
+
+    for (const c of components) {
+      const name = (c.name || '').replace(/\s+/g, '');
+      const relPath = c.path ? this.sanitizeRelativePath(c.path) : null;
+      if (!name || !relPath) continue;
+      if (alreadyImported.has(name)) continue;
+      if (!new RegExp(`<${name}(\\s|>|/)`).test(code)) continue;
+      if (new RegExp(`\\b(?:function|const|let|var|class)\\s+${name}\\b`).test(code)) continue;
+
+      const importPath = relPath
+        .replace(/^src\//, './')
+        .replace(/\.tsx$/i, '.jsx')
+        .replace(/\.ts$/i, '.js');
+      imports.push(`import ${name} from '${importPath}';`);
+      alreadyImported.add(name);
+    }
+
+    if (imports.length === 0) return code;
+    console.log('ReactPreviewBuildService.ensureEntryImports - added missing imports:', imports);
+    return `${imports.join('\n')}\n${code}`;
   }
 
   private injectPreviewRouterBasename(code: string): string {

@@ -1202,6 +1202,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
         }
         const resolvedChatId = chat.id || effectiveChatId;
 
+        fresh.framework = resolvedFramework;
         const saved = await this.saveWebsiteEditFromFetchedCode(
           fresh,
           websiteId,
@@ -1308,12 +1309,47 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       if (websiteCode.viteConfig.mainJs) websiteCode.viteConfig.mainJs = stripPlaceholders(websiteCode.viteConfig.mainJs);
     }
 
+    // Same recovery path as initial generation: v0 can wrap the full project in `projectData`
+    // inside mainJsx during follow-up edits.
+    if ((websiteCode?.components?.length ?? 0) === 0 && websiteCode?.viteConfig?.mainJsx) {
+      const recovered = this.tryRecoverStructuredProjectFromMain(websiteCode.viteConfig.mainJsx);
+      if (recovered) {
+        websiteCode.components = recovered.components;
+        websiteCode.viteConfig = { ...(websiteCode.viteConfig || {}), ...(recovered.viteConfig || {}) };
+        console.log('WebsiteService.saveWebsiteEditFromFetchedCode - Recovered wrapped projectData shape:', {
+          recoveredComponents: recovered.components.length,
+          hasRecoveredMain: !!(recovered.viteConfig?.mainJsx || recovered.viteConfig?.mainJs),
+        });
+      }
+    }
+
     const components = websiteCode.components || [];
     const viteConfig = websiteCode.viteConfig || null;
     const hasViteAppCode = !!(viteConfig?.mainJsx || viteConfig?.mainJs);
     const htmlCode = websiteCode.html || websiteCode.HTML || website.htmlCode || '';
     const cssCode = websiteCode.css || websiteCode.CSS || website.cssCode || '';
     const jsCode = websiteCode.js || websiteCode.JS || websiteCode.javascript || website.jsCode || '';
+
+    const componentNames = components.map((c: any) => (c.name || '').replace(/\s+/g, ''));
+    const mainJsxPreview = viteConfig?.mainJsx?.substring(0, 500) || viteConfig?.mainJs?.substring(0, 500) || '';
+    console.log('WebsiteService.saveWebsiteEditFromFetchedCode - After normalization:', {
+      componentNames,
+      mainJsxPreview: mainJsxPreview || '(none)',
+    });
+    const badPlaceholder = componentNames.find((name: string) => name && mainJsxPreview.includes(`const ${name} = []`));
+    if (badPlaceholder) {
+      console.warn(
+        'WebsiteService.saveWebsiteEditFromFetchedCode - mainJsx still contains placeholder for component:',
+        badPlaceholder,
+      );
+    }
+
+    console.log('WebsiteService.saveWebsiteEditFromFetchedCode - Extracted structure:', {
+      hasComponents: components.length > 0,
+      componentCount: components.length,
+      hasViteConfig: !!viteConfig,
+      legacyMode: components.length === 0,
+    });
 
     const hasLegacySnippet =
       (typeof htmlCode === 'string' && htmlCode.trim().length > 0) ||
@@ -1523,7 +1559,50 @@ STRICT STATIC HTML/CSS/JS BOUNDARY (must follow):
         : framework === 'html'
           ? 'static HTML/CSS/JS'
           : 'Next.js';
-    return `Target framework: ${target}. Keep this framework while applying the edit.\n\nEdit request:\n${editPrompt}`;
+    if (framework === 'react') {
+      return `Target framework: ${target}. Keep this framework while applying the edit.
+
+Edit request:
+${editPrompt}
+
+STRICT REACT/VITE EDIT BOUNDARY (must follow):
+- Build ONLY a React + Vite project. Do NOT generate Next.js files (no app/layout.tsx, no next/* imports, no metadata export).
+- Return ONLY the complete updated project JSON. No markdown, no prose, no explanation, no code fences.
+- The response must start with { and end with }.
+- Return component-based JSON structure with exactly the same top-level shape: { "components": [...], "viteConfig": { ... } }.
+- Preserve all existing component names, paths, languages, packageJson, viteConfig, indexHtml, mainJsx/mainJs, and styleCss unless the edit explicitly requires changing them.
+- Change ONLY what the edit request asks for.
+- Ensure viteConfig.mainJsx imports React, ReactDOM from react-dom/client, BrowserRouter/Routes/Route when routing is used, and mounts App via createRoot.
+- Keep routing with react-router-dom when multiple pages/routes exist.
+- Use only browser-safe client-side React code.
+- All code fields must be valid escaped JSON strings with \\n for newlines.`;
+    }
+    if (framework === 'html') {
+      return `Target framework: ${target}. Keep this framework while applying the edit.
+
+Edit request:
+${editPrompt}
+
+STRICT STATIC HTML/CSS/JS EDIT BOUNDARY (must follow):
+- Build ONLY a static website with HTML, CSS, and vanilla JavaScript.
+- Return ONLY valid JSON. No markdown, no prose, no explanation, no code fences.
+- The response must start with { and end with }.
+- Return JSON with exactly "html", "css", and "js" string fields.
+- Do NOT generate React, Next.js, JSX, TypeScript, package.json, Vite, npm scripts, or framework imports.
+- Change ONLY what the edit request asks for.
+- The HTML must link to ./styles.css and ./script.js.
+- The JavaScript must be browser-safe vanilla JavaScript.
+- All code fields must be valid escaped JSON strings with \\n for newlines.`;
+    }
+    return `Target framework: ${target}. Keep this framework while applying the edit.
+
+Edit request:
+${editPrompt}
+
+STRICT EDIT BOUNDARY:
+- Return only code output artifacts. No markdown explanations.
+- Change ONLY what the edit request asks for.
+- Keep the existing project structure unless the edit explicitly requires changing it.`;
   }
 
   /**
@@ -2382,7 +2461,8 @@ DESIGN (MANDATORY - PRODUCTION-READY):
       const vidNow = last.latestVersion?.id;
 
       if (followUp && priorSig !== undefined) {
-        const filesReady = files.length > 0 || this.websiteCodeFromChatDetail(last) != null;
+        const parsedWebsiteCode = this.websiteCodeFromChatDetail(last);
+        const filesReady = files.length > 0 || parsedWebsiteCode != null;
         const sigChanged = sigNow !== priorSig;
         const vidChanged = priorVid != null && vidNow != null && vidNow !== priorVid;
         const chatMetaChanged =
@@ -2394,8 +2474,24 @@ DESIGN (MANDATORY - PRODUCTION-READY):
           priorLatestVersionUpdatedAt != null &&
           verUpdNow != null &&
           verUpdNow !== priorLatestVersionUpdatedAt;
+        const tailNow = this.getLastAssistantTail(last);
+        const assistantChanged =
+          priorAssistantTail?.id != null &&
+          tailNow.id != null &&
+          (tailNow.id !== priorAssistantTail.id ||
+            (tailNow.updatedAt != null &&
+              priorAssistantTail.updatedAt != null &&
+              tailNow.updatedAt !== priorAssistantTail.updatedAt));
         if (status === 'failed') {
           console.warn('WebsiteService - follow-up poll: latestVersion failed');
+          return last;
+        }
+
+        if (parsedWebsiteCode && assistantChanged) {
+          console.log('WebsiteService - follow-up poll complete (new assistant project JSON)', {
+            fileCount: files.length,
+            status,
+          });
           return last;
         }
 
@@ -3048,6 +3144,50 @@ DESIGN (MANDATORY - PRODUCTION-READY):
     }
     let content = response.trim();
     console.log('WebsiteService.parseV0Response - Response length:', response.length, 'starts with:', JSON.stringify(content.substring(0, 20)), 'ends with:', JSON.stringify(content.substring(Math.max(0, content.length - 30))));
+
+    const parseCandidate = (candidate: string, label: string): any | null => {
+      const trimmed = candidate.trim();
+      if (!trimmed) return null;
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === 'object') {
+          console.log(`WebsiteService.parseV0Response - Parsed JSON (${label})`, {
+            hasComponents: Array.isArray(parsed.components),
+            componentCount: Array.isArray(parsed.components) ? parsed.components.length : 0,
+          });
+          return parsed;
+        }
+      } catch (e: any) {
+        const isTruncation = /Unterminated string|Unexpected end of JSON input|position \d+/.test(e?.message || '');
+        if (isTruncation) {
+          console.warn(`WebsiteService.parseV0Response - JSON likely truncated (${label}), attempting repair:`, e?.message);
+          const repaired = this.tryRepairTruncatedJson(trimmed);
+          if (repaired) {
+            try {
+              const parsed = JSON.parse(repaired);
+              if (parsed && typeof parsed === 'object') {
+                console.log(`WebsiteService.parseV0Response - Parsed after truncation repair (${label})`, {
+                  hasComponents: Array.isArray(parsed.components),
+                  componentCount: Array.isArray(parsed.components) ? parsed.components.length : 0,
+                });
+                return parsed;
+              }
+            } catch (e2: any) {
+              console.warn(`WebsiteService.parseV0Response - Repair parse failed (${label}):`, e2?.message);
+            }
+          }
+        }
+        return null;
+      }
+      return null;
+    };
+
+    // v0 follow-up edits may prepend prose before a fenced JSON artifact.
+    const fencedJson = content.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/i);
+    if (fencedJson?.[1]) {
+      const parsed = parseCandidate(fencedJson[1], 'fenced-block');
+      if (parsed) return parsed;
+    }
 
     // Strip leading markdown fence: ```json or ``` (with optional newline)
     content = content.replace(/^\s*```(?:json)?\s*\n?/i, '');
