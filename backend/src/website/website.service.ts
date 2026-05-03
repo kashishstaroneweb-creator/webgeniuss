@@ -14,7 +14,7 @@ import axios, { type AxiosResponse } from 'axios';
 import { CodeSanitizer } from './code-sanitizer';
 import { ReactPreviewBuildService } from './react-preview-build.service';
 
-type WebsiteFramework = 'next' | 'react';
+type WebsiteFramework = 'next' | 'react' | 'html';
 
 @Injectable()
 export class WebsiteService {
@@ -42,7 +42,9 @@ export class WebsiteService {
   }
 
   private normalizeFramework(framework?: string): WebsiteFramework {
-    return framework === 'react' ? 'react' : 'next';
+    if (framework === 'react') return 'react';
+    if (framework === 'html') return 'html';
+    return 'next';
   }
 
   constructor(
@@ -116,6 +118,28 @@ Rules:
 - Keep UI responsive, polished, and fully functional.
 - Use clean component architecture and modern styling.
 - Avoid placeholder stubs; return complete, runnable code.`;
+    }
+    if (framework === 'html') {
+      return `You are v0, an expert AI for production-ready static websites.
+
+Generate complete, polished static websites using ONLY HTML, CSS, and vanilla JavaScript.
+
+CRITICAL: You MUST return ONLY a valid JSON object. No explanations, no markdown, no code blocks, just pure JSON starting with { and ending with }.
+
+Required JSON structure:
+{
+  "html": "<!doctype html>\\n<html lang=\\\"en\\\">\\n<head>\\n  <meta charset=\\\"UTF-8\\\" />\\n  <meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1.0\\\" />\\n  <title>Website Name</title>\\n  <link rel=\\\"stylesheet\\\" href=\\\"./styles.css\\\" />\\n</head>\\n<body>\\n  <main>...</main>\\n  <script src=\\\"./script.js\\\"></script>\\n</body>\\n</html>",
+  "css": "/* complete responsive CSS */",
+  "js": "// complete vanilla JavaScript"
+}
+
+Rules:
+- Do NOT use React, Next.js, JSX, TypeScript, package.json, Vite, npm, or framework imports.
+- HTML must be semantic, complete, accessible, and include links to ./styles.css and ./script.js.
+- CSS must be responsive and production-ready with all visual styling.
+- JavaScript must be vanilla browser-safe JavaScript only.
+- Keep all assets external URLs or CSS effects; do not reference missing local assets.
+- Return complete code, not placeholders.`;
     }
     return `You are v0, an expert AI specialized in generating PRODUCTION-READY, enterprise-grade React components and websites. Your expertise is in creating stunning, modern web applications with Vite + React that look like they were built by top-tier agencies. Generate a component-based architecture following React and Vite best practices.
 
@@ -509,7 +533,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       throw err;
     }
 
-    const storeAsVite = components.length > 0 || hasViteAppCode;
+    const storeAsVite = framework !== 'html' && (components.length > 0 || hasViteAppCode);
     const website = this.websiteRepository.create({
       userId,
       websiteName,
@@ -518,14 +542,14 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       htmlCode: storeAsVite ? '' : htmlCode,
       cssCode: storeAsVite ? '' : cssCode,
       jsCode: storeAsVite ? '' : jsCode,
-      components: components.length > 0 ? components : undefined,
-      viteConfig: viteConfig || undefined,
+      components: storeAsVite && components.length > 0 ? components : undefined,
+      viteConfig: storeAsVite ? viteConfig || undefined : undefined,
       v0ChatId,
       v0DemoUrl: v0DemoUrl || undefined,
-      reactBuildStatus: framework === 'react' ? 'queued' : undefined,
+      reactBuildStatus: framework === 'react' || framework === 'html' ? 'queued' : undefined,
     });
 
-    const savedWebsite = await this.websiteRepository.save(website);
+    let savedWebsite = await this.websiteRepository.save(website);
 
     await this.promptRepository.save(
       this.promptRepository.create({
@@ -543,13 +567,20 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
         framework,
       });
       void this.reactPreviewBuildService.enqueue(savedWebsite.id.toString());
+    } else if (framework === 'html') {
+      console.log('WebsiteService.persistWebsiteAfterV0Generation - publishing static HTML preview:', {
+        websiteId: savedWebsite.id.toString(),
+        framework,
+      });
+      const published = await this.reactPreviewBuildService.publishStaticPreview(savedWebsite.id.toString());
+      if (published) savedWebsite = published;
     }
     console.log('WebsiteService.persistWebsiteAfterV0Generation - Success, saved website ID:', savedWebsite.id);
     return {
       ...savedWebsite,
       id: savedWebsite.id.toString(),
-      components: components.length > 0 ? components : undefined,
-      viteConfig: viteConfig || undefined,
+      components: storeAsVite && components.length > 0 ? components : undefined,
+      viteConfig: storeAsVite ? viteConfig || undefined : undefined,
       message: 'Website generated successfully',
     };
   }
@@ -1171,6 +1202,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
         }
         const resolvedChatId = chat.id || effectiveChatId;
 
+        fresh.framework = resolvedFramework;
         const saved = await this.saveWebsiteEditFromFetchedCode(
           fresh,
           websiteId,
@@ -1277,12 +1309,47 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       if (websiteCode.viteConfig.mainJs) websiteCode.viteConfig.mainJs = stripPlaceholders(websiteCode.viteConfig.mainJs);
     }
 
+    // Same recovery path as initial generation: v0 can wrap the full project in `projectData`
+    // inside mainJsx during follow-up edits.
+    if ((websiteCode?.components?.length ?? 0) === 0 && websiteCode?.viteConfig?.mainJsx) {
+      const recovered = this.tryRecoverStructuredProjectFromMain(websiteCode.viteConfig.mainJsx);
+      if (recovered) {
+        websiteCode.components = recovered.components;
+        websiteCode.viteConfig = { ...(websiteCode.viteConfig || {}), ...(recovered.viteConfig || {}) };
+        console.log('WebsiteService.saveWebsiteEditFromFetchedCode - Recovered wrapped projectData shape:', {
+          recoveredComponents: recovered.components.length,
+          hasRecoveredMain: !!(recovered.viteConfig?.mainJsx || recovered.viteConfig?.mainJs),
+        });
+      }
+    }
+
     const components = websiteCode.components || [];
     const viteConfig = websiteCode.viteConfig || null;
     const hasViteAppCode = !!(viteConfig?.mainJsx || viteConfig?.mainJs);
     const htmlCode = websiteCode.html || websiteCode.HTML || website.htmlCode || '';
     const cssCode = websiteCode.css || websiteCode.CSS || website.cssCode || '';
     const jsCode = websiteCode.js || websiteCode.JS || websiteCode.javascript || website.jsCode || '';
+
+    const componentNames = components.map((c: any) => (c.name || '').replace(/\s+/g, ''));
+    const mainJsxPreview = viteConfig?.mainJsx?.substring(0, 500) || viteConfig?.mainJs?.substring(0, 500) || '';
+    console.log('WebsiteService.saveWebsiteEditFromFetchedCode - After normalization:', {
+      componentNames,
+      mainJsxPreview: mainJsxPreview || '(none)',
+    });
+    const badPlaceholder = componentNames.find((name: string) => name && mainJsxPreview.includes(`const ${name} = []`));
+    if (badPlaceholder) {
+      console.warn(
+        'WebsiteService.saveWebsiteEditFromFetchedCode - mainJsx still contains placeholder for component:',
+        badPlaceholder,
+      );
+    }
+
+    console.log('WebsiteService.saveWebsiteEditFromFetchedCode - Extracted structure:', {
+      hasComponents: components.length > 0,
+      componentCount: components.length,
+      hasViteConfig: !!viteConfig,
+      legacyMode: components.length === 0,
+    });
 
     const hasLegacySnippet =
       (typeof htmlCode === 'string' && htmlCode.trim().length > 0) ||
@@ -1295,7 +1362,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       throw err;
     }
 
-    const storeAsVite = components.length > 0 || hasViteAppCode;
+    const storeAsVite = website.framework !== 'html' && (components.length > 0 || hasViteAppCode);
     if (storeAsVite) {
       website.components = components.length > 0 ? components : website.components;
       website.viteConfig = viteConfig || website.viteConfig;
@@ -1310,7 +1377,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     website.prompt = (website.prompt || '') + '\n[Edit] ' + editPrompt;
     website.v0ChatId = newV0ChatId;
     website.v0DemoUrl = v0DemoUrl || undefined;
-    if (website.framework === 'react') {
+    if (website.framework === 'react' || website.framework === 'html') {
       website.reactBuildStatus = 'queued';
       website.reactBuildLog = undefined;
       website.reactArtifactUrl = undefined;
@@ -1318,13 +1385,19 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       website.reactBuildStartedAt = undefined;
       website.reactBuildFinishedAt = undefined;
     }
-    const savedWebsite = await this.websiteRepository.save(website);
+    let savedWebsite = await this.websiteRepository.save(website);
     if (savedWebsite.framework === 'react') {
       console.log('WebsiteService.saveWebsiteEditFromFetchedCode - re-queueing React build after edit:', {
         websiteId: savedWebsite.id.toString(),
         status: savedWebsite.reactBuildStatus || null,
       });
       void this.reactPreviewBuildService.enqueue(savedWebsite.id.toString());
+    } else if (savedWebsite.framework === 'html') {
+      console.log('WebsiteService.saveWebsiteEditFromFetchedCode - publishing static HTML preview after edit:', {
+        websiteId: savedWebsite.id.toString(),
+      });
+      const published = await this.reactPreviewBuildService.publishStaticPreview(savedWebsite.id.toString());
+      if (published) savedWebsite = published;
     }
 
     console.log('WebsiteService.saveWebsiteEditFromFetchedCode - Success, website ID:', websiteId);
@@ -1385,8 +1458,9 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     } else {
       console.log('WebsiteService.editWebsite - No v0ChatId; fallback chats.create + inlined site payload');
       const isComponentBased =
-        (website.components?.length ?? 0) > 0 ||
-        !!(website.viteConfig?.mainJsx || website.viteConfig?.mainJs);
+        resolvedFramework !== 'html' &&
+        ((website.components?.length ?? 0) > 0 ||
+          !!(website.viteConfig?.mainJsx || website.viteConfig?.mainJs));
 
       const editSystemPrompt = isComponentBased
         ? `You are an expert editor for React/Vite websites. You will receive the CURRENT website as a JSON object with "components" (array of { name, type, path, code, language }) and "viteConfig" (object with packageJson, viteConfig, indexHtml, mainJsx, styleCss). The user will give you ONE edit instruction. Your job is to return the COMPLETE updated website in the EXACT SAME JSON structure. Rules:
@@ -1403,7 +1477,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
 
       const userMessage = isComponentBased
         ? `Target framework: ${resolvedFramework === 'react' ? 'React (Vite)' : 'Next.js'}\nCurrent website (JSON):\n${JSON.stringify({ components: website.components || [], viteConfig: website.viteConfig || {} })}\n\nUser edit request: ${editPrompt}`
-        : `Current HTML:\n${website.htmlCode || ''}\n\nCurrent CSS:\n${website.cssCode || ''}\n\nCurrent JS:\n${website.jsCode || ''}\n\nUser edit request: ${editPrompt}`;
+        : `Target framework: ${resolvedFramework === 'html' ? 'static HTML/CSS/JS' : 'HTML/CSS/JS'}\nCurrent HTML:\n${website.htmlCode || ''}\n\nCurrent CSS:\n${website.cssCode || ''}\n\nCurrent JS:\n${website.jsCode || ''}\n\nUser edit request: ${editPrompt}`;
 
       const r = await this.fetchWebsiteCodeFromV0(editSystemPrompt, userMessage);
       websiteCodeRaw = r.websiteCode;
@@ -1432,12 +1506,21 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     framework: WebsiteFramework,
   ): string {
     const p = (prompt || '').trim();
-    const boundedPrompt = framework === 'react' ? this.buildReactBoundedPrompt(p) : p;
+    const boundedPrompt =
+      framework === 'react'
+        ? this.buildReactBoundedPrompt(p)
+        : framework === 'html'
+          ? this.buildHtmlBoundedPrompt(p)
+          : p;
     const raw = (websiteName || '').trim();
     const looksAutoPlaceholder = /^Website\s+\d{10,}$/i.test(raw);
     const name = looksAutoPlaceholder ? '' : raw;
     const frameworkHeader =
-      framework === 'react' ? 'Target framework: React (Vite).' : 'Target framework: Next.js.';
+      framework === 'react'
+        ? 'Target framework: React (Vite).'
+        : framework === 'html'
+          ? 'Target framework: static HTML/CSS/JS.'
+          : 'Target framework: Next.js.';
     if (!name) return `${frameworkHeader}\n\nRequirements:\n${boundedPrompt}`;
     return (
       `${frameworkHeader}\n\n` +
@@ -1458,9 +1541,68 @@ STRICT REACT/VITE BOUNDARY (must follow):
 - Use only browser-safe client-side React code.`;
   }
 
+  private buildHtmlBoundedPrompt(prompt: string): string {
+    return `${prompt}
+
+STRICT STATIC HTML/CSS/JS BOUNDARY (must follow):
+- Build ONLY a static website with HTML, CSS, and vanilla JavaScript.
+- Do NOT generate React, Next.js, JSX, TypeScript, package.json, Vite, npm scripts, or framework imports.
+- Return JSON with exactly "html", "css", and "js" string fields.
+- The HTML must link to ./styles.css and ./script.js.
+- The JavaScript must be browser-safe vanilla JavaScript.`;
+  }
+
   private buildFrameworkScopedEditMessage(editPrompt: string, framework: WebsiteFramework): string {
-    const target = framework === 'react' ? 'React (Vite)' : 'Next.js';
-    return `Target framework: ${target}. Keep this framework while applying the edit.\n\nEdit request:\n${editPrompt}`;
+    const target =
+      framework === 'react'
+        ? 'React (Vite)'
+        : framework === 'html'
+          ? 'static HTML/CSS/JS'
+          : 'Next.js';
+    if (framework === 'react') {
+      return `Target framework: ${target}. Keep this framework while applying the edit.
+
+Edit request:
+${editPrompt}
+
+STRICT REACT/VITE EDIT BOUNDARY (must follow):
+- Build ONLY a React + Vite project. Do NOT generate Next.js files (no app/layout.tsx, no next/* imports, no metadata export).
+- Return ONLY the complete updated project JSON. No markdown, no prose, no explanation, no code fences.
+- The response must start with { and end with }.
+- Return component-based JSON structure with exactly the same top-level shape: { "components": [...], "viteConfig": { ... } }.
+- Preserve all existing component names, paths, languages, packageJson, viteConfig, indexHtml, mainJsx/mainJs, and styleCss unless the edit explicitly requires changing them.
+- Change ONLY what the edit request asks for.
+- Ensure viteConfig.mainJsx imports React, ReactDOM from react-dom/client, BrowserRouter/Routes/Route when routing is used, and mounts App via createRoot.
+- Keep routing with react-router-dom when multiple pages/routes exist.
+- Use only browser-safe client-side React code.
+- All code fields must be valid escaped JSON strings with \\n for newlines.`;
+    }
+    if (framework === 'html') {
+      return `Target framework: ${target}. Keep this framework while applying the edit.
+
+Edit request:
+${editPrompt}
+
+STRICT STATIC HTML/CSS/JS EDIT BOUNDARY (must follow):
+- Build ONLY a static website with HTML, CSS, and vanilla JavaScript.
+- Return ONLY valid JSON. No markdown, no prose, no explanation, no code fences.
+- The response must start with { and end with }.
+- Return JSON with exactly "html", "css", and "js" string fields.
+- Do NOT generate React, Next.js, JSX, TypeScript, package.json, Vite, npm scripts, or framework imports.
+- Change ONLY what the edit request asks for.
+- The HTML must link to ./styles.css and ./script.js.
+- The JavaScript must be browser-safe vanilla JavaScript.
+- All code fields must be valid escaped JSON strings with \\n for newlines.`;
+    }
+    return `Target framework: ${target}. Keep this framework while applying the edit.
+
+Edit request:
+${editPrompt}
+
+STRICT EDIT BOUNDARY:
+- Return only code output artifacts. No markdown explanations.
+- Change ONLY what the edit request asks for.
+- Keep the existing project structure unless the edit explicitly requires changing it.`;
   }
 
   /**
@@ -2319,7 +2461,8 @@ DESIGN (MANDATORY - PRODUCTION-READY):
       const vidNow = last.latestVersion?.id;
 
       if (followUp && priorSig !== undefined) {
-        const filesReady = files.length > 0 || this.websiteCodeFromChatDetail(last) != null;
+        const parsedWebsiteCode = this.websiteCodeFromChatDetail(last);
+        const filesReady = files.length > 0 || parsedWebsiteCode != null;
         const sigChanged = sigNow !== priorSig;
         const vidChanged = priorVid != null && vidNow != null && vidNow !== priorVid;
         const chatMetaChanged =
@@ -2331,8 +2474,24 @@ DESIGN (MANDATORY - PRODUCTION-READY):
           priorLatestVersionUpdatedAt != null &&
           verUpdNow != null &&
           verUpdNow !== priorLatestVersionUpdatedAt;
+        const tailNow = this.getLastAssistantTail(last);
+        const assistantChanged =
+          priorAssistantTail?.id != null &&
+          tailNow.id != null &&
+          (tailNow.id !== priorAssistantTail.id ||
+            (tailNow.updatedAt != null &&
+              priorAssistantTail.updatedAt != null &&
+              tailNow.updatedAt !== priorAssistantTail.updatedAt));
         if (status === 'failed') {
           console.warn('WebsiteService - follow-up poll: latestVersion failed');
+          return last;
+        }
+
+        if (parsedWebsiteCode && assistantChanged) {
+          console.log('WebsiteService - follow-up poll complete (new assistant project JSON)', {
+            fileCount: files.length,
+            status,
+          });
           return last;
         }
 
@@ -2834,6 +2993,25 @@ DESIGN (MANDATORY - PRODUCTION-READY):
    */
   private convertV0FilesToStructure(websiteCode: { files: Array<{ path: string; content: string }> }): any {
     const files = websiteCode.files || [];
+    const htmlFiles = files.filter((f: any) => /\.html?$/i.test(f.path));
+    const plainCssFiles = files.filter((f: any) => /\.(css|scss)$/i.test(f.path));
+    const plainJsFiles = files.filter((f: any) => /\.(m?js)$/i.test(f.path) && !/\.(jsx)$/i.test(f.path));
+    const hasFrameworkFiles = files.some((f: any) => /\.(tsx|jsx)$/i.test(f.path) || /^app\//i.test(f.path));
+    if (!hasFrameworkFiles && htmlFiles.length > 0) {
+      const indexFile =
+        htmlFiles.find((f: any) => /(^|\/)index\.html?$/i.test(f.path)) ||
+        htmlFiles[0];
+      console.log('WebsiteService.convertV0FilesToStructure - Converted static files to legacy HTML shape:', {
+        htmlCount: htmlFiles.length,
+        cssCount: plainCssFiles.length,
+        jsCount: plainJsFiles.length,
+      });
+      return {
+        html: indexFile?.content || '',
+        css: plainCssFiles.map((f: any) => f.content || '').join('\n\n'),
+        js: plainJsFiles.map((f: any) => f.content || '').join('\n\n'),
+      };
+    }
     const componentFiles = files.filter((f: any) => /^components?\//i.test(f.path) && /\.(tsx|jsx)$/i.test(f.path));
     const pageFiles = files.filter((f: any) => /^app\//i.test(f.path) && /\.(tsx|jsx)$/i.test(f.path));
     const styleFiles = files.filter((f: any) => /\.(css|scss)$/i.test(f.path));
@@ -2966,6 +3144,50 @@ DESIGN (MANDATORY - PRODUCTION-READY):
     }
     let content = response.trim();
     console.log('WebsiteService.parseV0Response - Response length:', response.length, 'starts with:', JSON.stringify(content.substring(0, 20)), 'ends with:', JSON.stringify(content.substring(Math.max(0, content.length - 30))));
+
+    const parseCandidate = (candidate: string, label: string): any | null => {
+      const trimmed = candidate.trim();
+      if (!trimmed) return null;
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === 'object') {
+          console.log(`WebsiteService.parseV0Response - Parsed JSON (${label})`, {
+            hasComponents: Array.isArray(parsed.components),
+            componentCount: Array.isArray(parsed.components) ? parsed.components.length : 0,
+          });
+          return parsed;
+        }
+      } catch (e: any) {
+        const isTruncation = /Unterminated string|Unexpected end of JSON input|position \d+/.test(e?.message || '');
+        if (isTruncation) {
+          console.warn(`WebsiteService.parseV0Response - JSON likely truncated (${label}), attempting repair:`, e?.message);
+          const repaired = this.tryRepairTruncatedJson(trimmed);
+          if (repaired) {
+            try {
+              const parsed = JSON.parse(repaired);
+              if (parsed && typeof parsed === 'object') {
+                console.log(`WebsiteService.parseV0Response - Parsed after truncation repair (${label})`, {
+                  hasComponents: Array.isArray(parsed.components),
+                  componentCount: Array.isArray(parsed.components) ? parsed.components.length : 0,
+                });
+                return parsed;
+              }
+            } catch (e2: any) {
+              console.warn(`WebsiteService.parseV0Response - Repair parse failed (${label}):`, e2?.message);
+            }
+          }
+        }
+        return null;
+      }
+      return null;
+    };
+
+    // v0 follow-up edits may prepend prose before a fenced JSON artifact.
+    const fencedJson = content.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/i);
+    if (fencedJson?.[1]) {
+      const parsed = parseCandidate(fencedJson[1], 'fenced-block');
+      if (parsed) return parsed;
+    }
 
     // Strip leading markdown fence: ```json or ``` (with optional newline)
     content = content.replace(/^\s*```(?:json)?\s*\n?/i, '');
@@ -3148,14 +3370,14 @@ DESIGN (MANDATORY - PRODUCTION-READY):
     }
 
     const inferredFramework =
-      website.framework === 'react' || website.framework === 'next'
+      website.framework === 'react' || website.framework === 'next' || website.framework === 'html'
         ? website.framework
         : ((website.components?.length ?? 0) > 0 || !!(website.viteConfig?.mainJsx || website.viteConfig?.mainJs))
             ? 'react'
-            : 'next';
+            : 'html';
     website.framework = inferredFramework;
-    if (inferredFramework !== 'react') {
-      const err = new Error('Preview rebuild is only supported for React websites.') as Error & { status?: number };
+    if (inferredFramework !== 'react' && inferredFramework !== 'html') {
+      const err = new Error('Preview rebuild is only supported for React and HTML websites.') as Error & { status?: number };
       err.status = 422;
       throw err;
     }
@@ -3167,16 +3389,24 @@ DESIGN (MANDATORY - PRODUCTION-READY):
     website.reactBuildStartedAt = undefined;
     website.reactBuildFinishedAt = undefined;
     const saved = await this.websiteRepository.save(website);
-    console.log('WebsiteService.rebuildReactPreview - queueing rebuild:', {
+    console.log('WebsiteService.rebuildReactPreview - rebuilding preview:', {
       websiteId: saved.id.toString(),
       framework: saved.framework,
     });
-    void this.reactPreviewBuildService.enqueue(saved.id.toString());
+    if (saved.framework === 'react') {
+      void this.reactPreviewBuildService.enqueue(saved.id.toString());
+    } else {
+      await this.reactPreviewBuildService.publishStaticPreview(saved.id.toString());
+    }
+    const latest = await this.websiteRepository.findOne({
+      where: { _id: new ObjectId(websiteId) } as any,
+    });
     return {
-      id: saved.id.toString(),
-      websiteId: saved.id.toString(),
-      reactBuildStatus: saved.reactBuildStatus,
-      message: 'React preview rebuild queued',
+      id: (latest || saved).id.toString(),
+      websiteId: (latest || saved).id.toString(),
+      reactBuildStatus: (latest || saved).reactBuildStatus,
+      reactArtifactUrl: (latest || saved).reactArtifactUrl,
+      message: saved.framework === 'react' ? 'React preview rebuild queued' : 'Static preview rebuilt',
     };
   }
 

@@ -62,13 +62,14 @@ interface ViteConfig {
   styleCss?: string;
 }
 
-type WebsiteFramework = 'next' | 'react';
+type WebsiteFramework = 'next' | 'react' | 'html';
 
 const inferFrameworkFromWebsite = (site: Partial<GeneratedWebsite> | null | undefined): WebsiteFramework => {
   if (!site) return 'next';
-  if (site.framework === 'react' || site.framework === 'next') return site.framework;
+  if (site.framework === 'react' || site.framework === 'next' || site.framework === 'html') return site.framework;
   const hasReactShape = (site.components?.length ?? 0) > 0 || !!(site.viteConfig?.mainJsx || site.viteConfig?.mainJs);
-  return hasReactShape ? 'react' : 'next';
+  const hasStaticShape = !!(site.htmlCode || site.cssCode || site.jsCode);
+  return hasReactShape ? 'react' : hasStaticShape ? 'html' : 'next';
 };
 
 interface GeneratedWebsite {
@@ -263,10 +264,10 @@ const Dashboard = () => {
     fetchStats();
   }, [generatedWebsite]);
 
-  // React build pipeline polling: keep refreshing until artifact is ready/failed.
+  // Artifact preview pipeline polling: React builds async; HTML publishes quickly but can still report status.
   useEffect(() => {
     if (!generatedWebsite?.id) return;
-    if (generatedWebsite.framework !== 'react') return;
+    if (generatedWebsite.framework !== 'react' && generatedWebsite.framework !== 'html') return;
     if (generatedWebsite.reactBuildStatus === 'ready' || generatedWebsite.reactBuildStatus === 'failed') return;
 
     let cancelled = false;
@@ -277,7 +278,7 @@ const Dashboard = () => {
         const res = await api.get(`/website/${websiteId}`);
         if (cancelled) return;
         const data = res.data;
-        console.log('[ReactPreviewPoll] status tick:', {
+        console.log('[PreviewArtifactPoll] status tick:', {
           websiteId,
           reactBuildStatus: data.reactBuildStatus || null,
           reactArtifactUrl: data.reactArtifactUrl || null,
@@ -292,7 +293,7 @@ const Dashboard = () => {
           };
         });
       } catch {
-        console.warn('[ReactPreviewPoll] status fetch failed, retrying...', { websiteId });
+        console.warn('[PreviewArtifactPoll] status fetch failed, retrying...', { websiteId });
       }
     };
 
@@ -924,6 +925,19 @@ const Dashboard = () => {
                         >
                           React
                         </button>
+                        <button
+                          type="button"
+                          onClick={() => setFramework('html')}
+                          disabled={editLoading || loading}
+                          className={cn(
+                            'rounded-md px-2 py-1 text-xs transition-all disabled:opacity-50 disabled:cursor-not-allowed',
+                            framework === 'html'
+                              ? 'bg-accent/20 text-accent'
+                              : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
+                          )}
+                        >
+                          HTML
+                        </button>
                       </div>
                     </div>
                     <button
@@ -1006,19 +1020,20 @@ const Dashboard = () => {
                       (generatedWebsite?.v0DemoUrl || generatedWebsite?.reactArtifactUrl) &&
                       !showCodeView
                     );
-                    const isReactFramework = generatedWebsite?.framework === 'react';
+                    const usesArtifactPipeline =
+                      generatedWebsite?.framework === 'react' || generatedWebsite?.framework === 'html';
+                    const isArtifactPending =
+                      usesArtifactPipeline &&
+                      (generatedWebsite?.reactBuildStatus === 'queued' ||
+                        generatedWebsite?.reactBuildStatus === 'building');
                     const previewReady =
                       !!generatedWebsite &&
                       !showCodeView &&
-                      ((isReactFramework && hostedPreview) ||
-                        (!isReactFramework &&
+                      !isArtifactPending &&
+                      ((usesArtifactPipeline && hostedPreview) ||
+                        (!usesArtifactPipeline &&
                           (hostedPreview ||
                             !!(generatedWebsite.components?.length || generatedWebsite.viteConfig?.mainJsx || generatedWebsite.viteConfig?.mainJs || generatedWebsite.htmlCode))));
-                    const isReactBuildPending =
-                      generatedWebsite?.framework === 'react' &&
-                      (generatedWebsite?.reactBuildStatus === 'queued' ||
-                        generatedWebsite?.reactBuildStatus === 'building') &&
-                      !generatedWebsite?.reactArtifactUrl;
                     return (
                       <>
                         {previewReady ? (
@@ -1031,8 +1046,10 @@ const Dashboard = () => {
                             ? hostedPreview
                               ? 'Preview ready (hosted)'
                               : 'Preview ready'
-                            : isReactBuildPending
-                              ? 'Building React preview...'
+                            : isArtifactPending
+                              ? generatedWebsite?.framework === 'html'
+                                ? 'Publishing static preview...'
+                                : 'Building React preview...'
                               : 'Rendering preview...'}
                         </span>
                       </>
@@ -1063,14 +1080,14 @@ const Dashboard = () => {
                   </CardTitle>
                   {generatedWebsite && (
                     <div className="flex items-center gap-2">
-                      {generatedWebsite.framework === 'react' && (
+                      {(generatedWebsite.framework === 'react' || generatedWebsite.framework === 'html') && (
                         <Button
                           variant="outline"
                           size="sm"
                           onClick={handleRebuildPreview}
                           disabled={rebuildLoading}
                           className="gap-2"
-                          title="Rebuild React preview from saved code (no extra v0 credits)"
+                          title="Rebuild preview from saved code (no extra v0 credits)"
                         >
                           <RotateCw className={`h-4 w-4 ${rebuildLoading ? 'animate-spin' : ''}`} />
                           {rebuildLoading ? 'Rebuilding...' : 'Rebuild Preview'}
@@ -1527,53 +1544,95 @@ const Dashboard = () => {
                       </div>
                     ) : (
                       <div className="flex-1 overflow-auto h-full flex flex-col min-h-[600px] min-w-0">
-                        {generatedWebsite.framework === 'react' &&
-                        !generatedWebsite.reactArtifactUrl &&
-                        !generatedWebsite.v0DemoUrl ? (
-                          <div className="h-full min-h-[600px] border rounded-xl p-6 bg-muted/20 overflow-auto">
-                            <h3 className="text-lg font-semibold mb-2">React preview is being prepared</h3>
-                            <p className="text-sm text-muted-foreground mb-3">
-                              We now use build artifacts for React consistency, so inline Babel preview is disabled.
-                            </p>
-                            <p className="text-sm">
-                              Status:{' '}
-                              <span className="font-medium">
-                                {generatedWebsite.reactBuildStatus || 'queued'}
-                              </span>
-                            </p>
-                            <div className="mt-4">
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={handleRebuildPreview}
-                                disabled={rebuildLoading}
-                                className="gap-2"
-                                title="Rebuild React preview from saved code (no extra v0 credits)"
-                              >
-                                <RotateCw className={`h-4 w-4 ${rebuildLoading ? 'animate-spin' : ''}`} />
-                                {rebuildLoading ? 'Rebuilding...' : 'Rebuild Preview'}
-                              </Button>
-                            </div>
-                            {generatedWebsite.reactBuildStatus === 'failed' && generatedWebsite.reactBuildLog ? (
-                              <pre className="mt-4 text-xs bg-background border rounded p-3 whitespace-pre-wrap">
-                                {generatedWebsite.reactBuildLog.slice(-4000)}
-                              </pre>
-                            ) : null}
-                          </div>
-                        ) : (
-                          <WebsitePreview
-                            html={generatedWebsite.htmlCode}
-                            css={generatedWebsite.cssCode}
-                            js={generatedWebsite.jsCode}
-                            components={generatedWebsite.components}
-                            viteConfig={generatedWebsite.viteConfig}
-                            websiteName={generatedWebsite.websiteName}
-                            v0DemoUrl={generatedWebsite.v0DemoUrl}
-                            artifactUrl={generatedWebsite.reactArtifactUrl}
-                            prompt={generatedWebsite.prompt}
-                            className="h-full min-h-[600px]"
-                          />
-                        )}
+                        {(() => {
+                          const usesArtifactPipeline =
+                            generatedWebsite.framework === 'react' || generatedWebsite.framework === 'html';
+                          const artifactPending =
+                            usesArtifactPipeline &&
+                            (generatedWebsite.reactBuildStatus === 'queued' ||
+                              generatedWebsite.reactBuildStatus === 'building');
+                          const showPreviewLoader = editLoading || rebuildLoading || artifactPending;
+
+                          if (showPreviewLoader) {
+                            const isHtml = generatedWebsite.framework === 'html';
+                            return (
+                              <GeneratingLoader
+                                variant="building"
+                                title={
+                                  artifactPending
+                                    ? isHtml
+                                      ? 'Publishing preview...'
+                                      : 'Building preview...'
+                                    : editLoading
+                                      ? 'Applying edit...'
+                                      : isHtml
+                                        ? 'Publishing preview...'
+                                        : 'Building preview...'
+                                }
+                                subtitle={
+                                  artifactPending
+                                    ? isHtml
+                                      ? 'Uploading static preview artifact'
+                                      : 'Running npm install, Vite build, and artifact upload'
+                                    : editLoading
+                                      ? 'Updating project files from your edit'
+                                      : isHtml
+                                        ? 'Uploading static preview artifact'
+                                        : 'Running npm install, Vite build, and artifact upload'
+                                }
+                              />
+                            );
+                          }
+
+                          if (
+                            usesArtifactPipeline &&
+                            generatedWebsite.reactBuildStatus === 'failed' &&
+                            !generatedWebsite.reactArtifactUrl &&
+                            !generatedWebsite.v0DemoUrl
+                          ) {
+                            return (
+                              <div className="h-full min-h-[600px] border rounded-xl p-6 bg-muted/20 overflow-auto">
+                                <h3 className="text-lg font-semibold mb-2">Preview build failed</h3>
+                                <p className="text-sm">
+                                  Status: <span className="font-medium">{generatedWebsite.reactBuildStatus}</span>
+                                </p>
+                                <div className="mt-4">
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={handleRebuildPreview}
+                                    disabled={rebuildLoading}
+                                    className="gap-2"
+                                    title="Rebuild preview from saved code (no extra v0 credits)"
+                                  >
+                                    <RotateCw className={`h-4 w-4 ${rebuildLoading ? 'animate-spin' : ''}`} />
+                                    {rebuildLoading ? 'Rebuilding...' : 'Rebuild Preview'}
+                                  </Button>
+                                </div>
+                                {generatedWebsite.reactBuildLog ? (
+                                  <pre className="mt-4 text-xs bg-background border rounded p-3 whitespace-pre-wrap">
+                                    {generatedWebsite.reactBuildLog.slice(-4000)}
+                                  </pre>
+                                ) : null}
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <WebsitePreview
+                              html={generatedWebsite.htmlCode}
+                              css={generatedWebsite.cssCode}
+                              js={generatedWebsite.jsCode}
+                              components={generatedWebsite.components}
+                              viteConfig={generatedWebsite.viteConfig}
+                              websiteName={generatedWebsite.websiteName}
+                              v0DemoUrl={generatedWebsite.v0DemoUrl}
+                              artifactUrl={generatedWebsite.reactArtifactUrl}
+                              prompt={generatedWebsite.prompt}
+                              className="h-full min-h-[600px]"
+                            />
+                          );
+                        })()}
                       </div>
                     )}
                   </div>

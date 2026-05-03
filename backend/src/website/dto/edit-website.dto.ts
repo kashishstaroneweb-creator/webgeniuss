@@ -11,6 +11,6 @@ export class EditWebsiteDto {
 
   @IsString()
   @IsOptional()
-  @IsIn(['next', 'react'])
-  framework?: 'next' | 'react';
+  @IsIn(['next', 'react', 'html'])
+  framework?: 'next' | 'react' | 'html';
 }

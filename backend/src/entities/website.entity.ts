@@ -18,7 +18,7 @@ export class Website {
   websiteName: string;
 
   @Column({ nullable: true })
-  framework?: 'next' | 'react';
+  framework?: 'next' | 'react' | 'html';
 
   @Column({ type: 'text', nullable: true })
   prompt?: string;

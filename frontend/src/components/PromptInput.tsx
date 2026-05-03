@@ -15,8 +15,8 @@ interface PromptInputProps {
   prompt: string;
   setPrompt: (value: string) => void;
   onGenerate: (overridePrompt?: string) => void;
-  framework: 'next' | 'react';
-  setFramework: (value: 'next' | 'react') => void;
+  framework: 'next' | 'react' | 'html';
+  setFramework: (value: 'next' | 'react' | 'html') => void;
   loading?: boolean;
   disabled?: boolean;
 }
@@ -133,6 +133,19 @@ export function PromptInput({
                 )}
               >
                 React
+              </button>
+              <button
+                type="button"
+                onClick={() => setFramework('html')}
+                disabled={disabled || loading}
+                className={cn(
+                  'rounded-md px-2 py-1 text-xs transition-all disabled:opacity-50 disabled:cursor-not-allowed',
+                  framework === 'html'
+                    ? 'bg-accent/20 text-accent'
+                    : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
+                )}
+              >
+                HTML
               </button>
             </div>
           </div>
