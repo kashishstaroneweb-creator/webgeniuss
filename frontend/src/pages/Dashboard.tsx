@@ -158,7 +158,7 @@ const Dashboard = () => {
   }, [generatedWebsite?.prompt]);
 
   const editSuggestions = [
-    'Make the header background dark blue',
+    'Make the header background light blue',
     'Add a contact form below the hero',
     'Change the hero title to Welcome',
     'Add a footer with social links',
@@ -947,7 +947,7 @@ const Dashboard = () => {
                       className={cn(
                         'flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all duration-200',
                         addOnPrompt.trim() && !editLoading && !loading
-                          ? 'btn-gradient-border text-green-400 hover:text-green-300 active:scale-95'
+                          ? 'btn-gradient-border text-foreground hover:text-accent dark:text-green-300 dark:hover:text-green-200 active:scale-95'
                           : 'bg-secondary text-muted-foreground cursor-not-allowed'
                       )}
                     >
