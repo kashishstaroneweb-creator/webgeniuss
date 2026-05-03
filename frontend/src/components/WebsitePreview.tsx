@@ -207,8 +207,15 @@ const WebsitePreview = ({
   const [previewPath, setPreviewPath] = useState('/');
   const routeListIdRef = useRef(`preview-route-options-${Math.random().toString(36).slice(2, 8)}`);
   const hostedPreviewUrlRaw = artifactUrl || v0DemoUrl;
+  const isLocalPreviewArtifactUrl = !!(
+    hostedPreviewUrlRaw &&
+    (hostedPreviewUrlRaw.startsWith('/preview-artifacts') ||
+      hostedPreviewUrlRaw.includes('/preview-artifacts/'))
+  );
   const normalizedHostedUrl = hostedPreviewUrlRaw
-    ? hostedPreviewUrlRaw.replace(/\/index\.html(\?.*)?$/i, '/')
+    ? isLocalPreviewArtifactUrl
+      ? hostedPreviewUrlRaw.replace(/\/index\.html(\?.*)?$/i, '/')
+      : hostedPreviewUrlRaw
     : hostedPreviewUrlRaw;
   const hostedPreviewUrl =
     normalizedHostedUrl && normalizedHostedUrl.startsWith('/preview-artifacts')

@@ -63,6 +63,67 @@ export class ReactPreviewBuildService {
     }
   }
 
+  async publishStaticPreview(websiteId: string): Promise<Website | null> {
+    const site = await this.websiteRepository.findOne({
+      where: { _id: new ObjectId(websiteId) } as any,
+    });
+    if (!site) return null;
+    if (site.framework !== 'html') return site;
+
+    const buildId = Date.now().toString(36);
+    const workspaceRoot = path.resolve(process.env.REACT_PREVIEW_WORKSPACE_ROOT || path.join(process.cwd(), '.preview-builds'));
+    const artifactsRoot = path.resolve(process.env.REACT_PREVIEW_ARTIFACT_ROOT || path.join(process.cwd(), '.preview-artifacts'));
+    const workspaceDir = path.join(workspaceRoot, websiteId, buildId);
+    const distDir = path.join(workspaceDir, 'dist');
+    const artifactDir = path.join(artifactsRoot, websiteId, buildId);
+
+    await this.mark(site, 'building', {
+      reactBuildId: buildId,
+      reactBuildLog: undefined,
+      reactArtifactUrl: undefined,
+      reactBuildStartedAt: new Date(),
+      reactBuildFinishedAt: undefined,
+    });
+
+    try {
+      await fs.promises.mkdir(distDir, { recursive: true });
+      await this.writeStaticProjectFiles(distDir, site);
+      const storageMode = this.getStorageMode();
+      const artifactUrl =
+        storageMode === 'r2'
+          ? await this.publishDistToR2(distDir, websiteId, buildId)
+          : await this.publishDistToLocal(distDir, artifactDir, websiteId, buildId);
+
+      const latest = await this.websiteRepository.findOne({
+        where: { _id: new ObjectId(websiteId) } as any,
+      });
+      if (!latest) return null;
+      await this.mark(latest, 'ready', {
+        reactBuildId: buildId,
+        reactArtifactUrl: artifactUrl,
+        reactBuildLog: 'Static HTML preview published without npm install or build.',
+        reactBuildFinishedAt: new Date(),
+      });
+    } catch (error: any) {
+      const latest = await this.websiteRepository.findOne({
+        where: { _id: new ObjectId(websiteId) } as any,
+      });
+      if (latest) {
+        await this.mark(latest, 'failed', {
+          reactBuildId: buildId,
+          reactBuildLog: (error?.stack || error?.message || String(error)).slice(-120_000),
+          reactBuildFinishedAt: new Date(),
+        });
+      }
+    } finally {
+      await fs.promises.rm(workspaceDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+
+    return this.websiteRepository.findOne({
+      where: { _id: new ObjectId(websiteId) } as any,
+    });
+  }
+
   private async drain(): Promise<void> {
     while (this.queue.length > 0) {
       const websiteId = this.queue.shift()!;
@@ -232,6 +293,59 @@ export class ReactPreviewBuildService {
     }
   }
 
+  private async writeStaticProjectFiles(distDir: string, site: Website): Promise<void> {
+    const css = site.cssCode || '';
+    const js = this.injectPreviewMessagingBridge(site.jsCode || '');
+    const html = this.prepareStaticIndexHtml(site.htmlCode || '', css, js, site.websiteName || 'Static Preview');
+
+    await this.writeFileSafe(distDir, 'index.html', html);
+    await this.writeFileSafe(distDir, 'styles.css', css);
+    await this.writeFileSafe(distDir, 'script.js', js);
+  }
+
+  private prepareStaticIndexHtml(rawHtml: string, css: string, js: string, title: string): string {
+    const trimmed = (rawHtml || '').trim();
+    let html =
+      /<html[\s>]/i.test(trimmed) || /<!doctype/i.test(trimmed)
+        ? trimmed
+        : [
+            '<!doctype html>',
+            '<html lang="en">',
+            '  <head>',
+            '    <meta charset="UTF-8" />',
+            '    <meta name="viewport" content="width=device-width, initial-scale=1.0" />',
+            `    <title>${this.escapeHtml(title)}</title>`,
+            '  </head>',
+            '  <body>',
+            trimmed || '<main></main>',
+            '  </body>',
+            '</html>',
+            '',
+          ].join('\n');
+
+    if (!/<head[\s>]/i.test(html)) {
+      html = html.replace(/<html([^>]*)>/i, '<html$1><head></head>');
+    }
+    if (!/<body[\s>]/i.test(html)) {
+      html = html.replace(/<\/head>/i, '</head><body>').replace(/<\/html>/i, '</body></html>');
+    }
+    if (css.trim() && !/href=["']\.?\/?styles\.css["']/i.test(html)) {
+      html = html.replace(/<\/head>/i, '  <link rel="stylesheet" href="./styles.css" />\n</head>');
+    }
+    if (js.trim() && !/src=["']\.?\/?script\.js["']/i.test(html)) {
+      html = html.replace(/<\/body>/i, '  <script src="./script.js"></script>\n</body>');
+    }
+    return html;
+  }
+
+  private escapeHtml(input: string): string {
+    return input
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
   private async publishDistToLocal(
     distDir: string,
     artifactDir: string,
@@ -283,7 +397,7 @@ export class ReactPreviewBuildService {
     }
 
     const publicBase = publicBaseRaw.replace(/\/+$/, '');
-    const url = `${publicBase}/${prefix}/`;
+    const url = `${publicBase}/${prefix}/index.html`;
     console.log('ReactPreviewBuildService.publishDistToR2 - published:', {
       websiteId,
       buildId,
@@ -630,15 +744,32 @@ export class ReactPreviewBuildService {
     if (!/<BrowserRouter\b/.test(code)) return code;
 
     const helper = [
+      '(function () {',
+      "  if (typeof window === 'undefined' || !window.location || !window.history) return;",
+      "  var p = window.location.pathname || '/';",
+      "  if (!p.endsWith('/index.html')) return;",
+      "  var nextPath = p.slice(0, -'/index.html'.length) + '/';",
+      "  var nextUrl = nextPath + (window.location.search || '') + (window.location.hash || '');",
+      '  try { window.history.replaceState({}, \'\', nextUrl); } catch (_e) {}',
+      '})();',
+      '',
       'const __previewBasename = (function () {',
       "  var p = (typeof window !== 'undefined' && window.location && window.location.pathname) || '/';",
+      "  if (!p || p === '/') return '/';",
       "  var marker = '/preview-artifacts/';",
       '  var idx = p.indexOf(marker);',
-      "  if (idx === -1) return '/';",
-      '  var after = p.slice(idx + marker.length);',
-      "  var parts = after.split('/').filter(Boolean);",
-      "  if (parts.length < 2) return '/';",
-      "  return marker + parts[0] + '/' + parts[1];",
+      '  if (idx !== -1) {',
+      '    var after = p.slice(idx + marker.length);',
+      "    var parts = after.split('/').filter(Boolean);",
+      "    if (parts.length >= 2) return marker + parts[0] + '/' + parts[1];",
+      '  }',
+      "  if (p.endsWith('/index.html')) {",
+      "    var b = p.slice(0, -'/index.html'.length);",
+      "    return b || '/';",
+      '  }',
+      "  if (p.endsWith('/')) {",
+      "    return p.length > 1 ? p.slice(0, -1) : '/';",
+      '  }',
       '})();',
       '',
     ].join('\n');
@@ -663,15 +794,24 @@ export class ReactPreviewBuildService {
 /* __WEBGENIUS_PREVIEW_BRIDGE__ */
 if (typeof window !== 'undefined') {
   (function () {
-    var marker = '/preview-artifacts/';
     function computeBase() {
       var p = (window.location && window.location.pathname) || '/';
+      if (!p || p === '/') return '/';
+      var marker = '/preview-artifacts/';
       var idx = p.indexOf(marker);
-      if (idx === -1) return '/';
-      var after = p.slice(idx + marker.length);
-      var parts = after.split('/').filter(Boolean);
-      if (parts.length < 2) return '/';
-      return marker + parts[0] + '/' + parts[1];
+      if (idx !== -1) {
+        var after = p.slice(idx + marker.length);
+        var parts = after.split('/').filter(Boolean);
+        if (parts.length >= 2) return marker + parts[0] + '/' + parts[1];
+      }
+      if (p.endsWith('/index.html')) {
+        var b = p.slice(0, -'/index.html'.length);
+        return b || '/';
+      }
+      if (p.endsWith('/')) {
+        return p.length > 1 ? p.slice(0, -1) : '/';
+      }
+      return '/';
     }
     function normalizePath(input) {
       var s = typeof input === 'string' ? input.trim() : '/';

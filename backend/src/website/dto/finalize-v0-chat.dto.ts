@@ -20,5 +20,5 @@ export class FinalizeV0ChatDto {
 
   @IsString()
   @IsOptional()
-  framework?: 'next' | 'react';
+  framework?: 'next' | 'react' | 'html';
 }
