@@ -122,24 +122,47 @@ Rules:
     if (framework === 'html') {
       return `You are v0, an expert AI for production-ready static websites.
 
-Generate complete, polished static websites using ONLY HTML, CSS, and vanilla JavaScript.
+Generate complete, polished static websites using ONLY HTML, CSS, and vanilla JavaScript. Treat this like a real handoff to a developer who will publish index.html, styles.css, and script.js directly.
 
 CRITICAL: You MUST return ONLY a valid JSON object. No explanations, no markdown, no code blocks, just pure JSON starting with { and ending with }.
 
-Required JSON structure:
+Required JSON structure. The top-level object MUST contain exactly these three string fields:
 {
   "html": "<!doctype html>\\n<html lang=\\\"en\\\">\\n<head>\\n  <meta charset=\\\"UTF-8\\\" />\\n  <meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1.0\\\" />\\n  <title>Website Name</title>\\n  <link rel=\\\"stylesheet\\\" href=\\\"./styles.css\\\" />\\n</head>\\n<body>\\n  <main>...</main>\\n  <script src=\\\"./script.js\\\"></script>\\n</body>\\n</html>",
-  "css": "/* complete responsive CSS */",
-  "js": "// complete vanilla JavaScript"
+  "css": "/* complete responsive CSS, at least 150 lines for a full landing page */",
+  "js": "// complete vanilla JavaScript for interactions"
 }
 
-Rules:
-- Do NOT use React, Next.js, JSX, TypeScript, package.json, Vite, npm, or framework imports.
-- HTML must be semantic, complete, accessible, and include links to ./styles.css and ./script.js.
-- CSS must be responsive and production-ready with all visual styling.
-- JavaScript must be vanilla browser-safe JavaScript only.
-- Keep all assets external URLs or CSS effects; do not reference missing local assets.
-- Return complete code, not placeholders.`;
+STATIC FILE CONTRACT:
+- "html", "css", and "js" MUST all be present and MUST be non-empty strings.
+- The HTML string MUST be a complete document: <!doctype html>, <html>, <head>, <body>.
+- The HTML MUST link to ./styles.css exactly once and ./script.js exactly once.
+- Put ALL styling in the "css" field, not inline style attributes or <style> tags.
+- Put ALL behavior in the "js" field, not inline onclick attributes or <script> tags except the script.js include.
+- Do NOT use React, Next.js, JSX, TypeScript, package.json, Vite, npm, Tailwind build steps, or framework imports.
+- Do NOT return "components", "viteConfig", "files", markdown, prose, comments outside JSON, or empty placeholders.
+
+HTML REQUIREMENTS:
+- Use semantic sections: header/nav, main, sections, forms when relevant, footer.
+- Include real content for the requested website, not lorem ipsum unless the user explicitly asks for placeholders.
+- Include accessible labels, alt text, aria-expanded/aria-controls where needed, and keyboard-friendly controls.
+- Use data-* attributes or class hooks for JavaScript behavior.
+
+CSS REQUIREMENTS:
+- Production-ready custom CSS with :root variables, responsive layout, Grid/Flexbox, media queries, focus states, hover states, transitions, and polished spacing.
+- Add strong visual design: typography hierarchy, buttons, cards/sections, forms, nav, footer, mobile menu styles when relevant.
+- Make it mobile-first and responsive across mobile, tablet, and desktop.
+
+JAVASCRIPT REQUIREMENTS:
+- Vanilla browser-safe JavaScript only. Use addEventListener and DOM APIs.
+- Implement expected interactions for the page: mobile nav, smooth scrolling, form validation, tabs/modals/carousels/cart/filtering when the prompt implies them.
+- Wrap initialization in DOMContentLoaded.
+- Guard DOM queries so missing optional elements do not throw.
+
+QUALITY BAR:
+- Complete, runnable code. No TODOs, no stubs, no empty arrays/objects, no "add your code here".
+- If the user asks for a simple static page, still include enough CSS/JS to make the page polished and functional.
+- Return valid JSON with escaped newlines as \\n and escaped quotes inside strings.`;
     }
     return `You are v0, an expert AI specialized in generating PRODUCTION-READY, enterprise-grade React components and websites. Your expertise is in creating stunning, modern web applications with Vite + React that look like they were built by top-tier agencies. Generate a component-based architecture following React and Vite best practices.
 
@@ -1471,8 +1494,12 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
 - Keep the same code style and patterns. Do not strip or simplify existing code.
 - Output the full JSON: { "components": [...], "viteConfig": { ... } }.`
         : `You are an expert editor for HTML/CSS/JS websites. You will receive the CURRENT website as HTML, CSS, and JS. The user will give you ONE edit instruction. Return a JSON object with "html", "css", "js" containing the FULL updated code. Rules:
-- Return ONLY valid JSON: { "html": "...", "css": "...", "js": "..." }. No markdown, no explanation.
+- Return ONLY valid JSON: { "html": "...", "css": "...", "js": "..." }. No markdown, no explanation, no code fences.
+- "html", "css", and "js" must all be present and non-empty strings.
 - Change ONLY what the user asked. Keep everything else identical.
+- Keep it static HTML/CSS/JS only. Do NOT add React, Next.js, JSX, TypeScript, package.json, Vite, npm, or framework imports.
+- HTML must remain a complete document and must link ./styles.css and ./script.js.
+- Put all styling in "css" and all behavior in "js".
 - Escape strings for JSON (newlines as \\n, quotes escaped).`;
 
       const userMessage = isComponentBased
@@ -1546,10 +1573,14 @@ STRICT REACT/VITE BOUNDARY (must follow):
 
 STRICT STATIC HTML/CSS/JS BOUNDARY (must follow):
 - Build ONLY a static website with HTML, CSS, and vanilla JavaScript.
-- Do NOT generate React, Next.js, JSX, TypeScript, package.json, Vite, npm scripts, or framework imports.
-- Return JSON with exactly "html", "css", and "js" string fields.
-- The HTML must link to ./styles.css and ./script.js.
-- The JavaScript must be browser-safe vanilla JavaScript.`;
+- Return ONLY valid JSON. No markdown, no prose, no code fences.
+- Return exactly three non-empty top-level string fields: "html", "css", and "js".
+- Do NOT generate React, Next.js, JSX, TypeScript, package.json, Vite, npm scripts, Tailwind build steps, or framework imports.
+- The HTML must be a complete document and must link to ./styles.css and ./script.js exactly once.
+- Put all styles in "css"; put all behavior in "js"; no inline style attributes, onclick attributes, or inline <script> logic.
+- CSS must be polished, responsive, mobile-first, and include :root variables, media queries, hover/focus states, layout, typography, forms/buttons/cards/nav/footer styling.
+- JavaScript must be browser-safe vanilla JavaScript, initialized on DOMContentLoaded, with guarded DOM queries and real interactions relevant to the prompt.
+- No TODOs, no placeholders, no empty strings, no stubs.`;
   }
 
   private buildFrameworkScopedEditMessage(editPrompt: string, framework: WebsiteFramework): string {
@@ -1588,10 +1619,12 @@ STRICT STATIC HTML/CSS/JS EDIT BOUNDARY (must follow):
 - Return ONLY valid JSON. No markdown, no prose, no explanation, no code fences.
 - The response must start with { and end with }.
 - Return JSON with exactly "html", "css", and "js" string fields.
+- "html", "css", and "js" must all be non-empty strings.
 - Do NOT generate React, Next.js, JSX, TypeScript, package.json, Vite, npm scripts, or framework imports.
 - Change ONLY what the edit request asks for.
-- The HTML must link to ./styles.css and ./script.js.
-- The JavaScript must be browser-safe vanilla JavaScript.
+- The HTML must remain a complete document and link to ./styles.css and ./script.js exactly once.
+- Put all styling in "css"; put all behavior in "js"; no inline onclick handlers.
+- The JavaScript must be browser-safe vanilla JavaScript, initialized on DOMContentLoaded where needed, with guarded DOM queries.
 - All code fields must be valid escaped JSON strings with \\n for newlines.`;
     }
     return `Target framework: ${target}. Keep this framework while applying the edit.
@@ -3083,11 +3116,11 @@ DESIGN (MANDATORY - PRODUCTION-READY):
   private tryRepairTruncatedJson(content: string): string | null {
     const trimmed = content.trim();
     if (!trimmed) return null;
-    // Shape: { "components": [ ... ], "viteConfig": { ... } }
     const suffixes = [
-      '"\n}\n]\n}',           // truncated inside last component field → close string, component }, array ], root }
-      '"\n}\n}',              // truncated inside viteConfig (e.g. styleCss) → close string, viteConfig }, root }
-      '"\n]\n}',              // truncated after last component object → close string, array ], root }
+      '"\n}\n]\n}',
+      '"\n}\n}',
+      '"\n]\n}',
+      '"\n}',
     ];
     for (const suffix of suffixes) {
       try {
@@ -3290,6 +3323,27 @@ DESIGN (MANDATORY - PRODUCTION-READY):
         return parsed;
       } catch (e: any) {
         console.warn('WebsiteService.extractCodeFromResponse - Legacy JSON match found but parse failed:', e?.message);
+      }
+    }
+
+    const genericLegacyJsonMatch = response.match(/\{[\s\S]*"(?:html|HTML|css|CSS|js|JS|javascript)"[\s\S]*\}/);
+    if (genericLegacyJsonMatch) {
+      try {
+        const parsed = JSON.parse(genericLegacyJsonMatch[0]);
+        const hasStaticCode =
+          typeof parsed?.html === 'string' ||
+          typeof parsed?.HTML === 'string' ||
+          typeof parsed?.css === 'string' ||
+          typeof parsed?.CSS === 'string' ||
+          typeof parsed?.js === 'string' ||
+          typeof parsed?.JS === 'string' ||
+          typeof parsed?.javascript === 'string';
+        if (hasStaticCode) {
+          console.log('WebsiteService.extractCodeFromResponse - Found generic static JSON object in response');
+          return parsed;
+        }
+      } catch (e: any) {
+        console.warn('WebsiteService.extractCodeFromResponse - Generic static JSON match found but parse failed:', e?.message);
       }
     }
     
