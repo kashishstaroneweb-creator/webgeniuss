@@ -107,16 +107,17 @@ export function PromptInput({
                 </>
               )}
             </button>
-            <div className="flex items-center rounded-lg border border-border/60 bg-background/30 p-0.5">
+            <div className="flex items-center rounded-xl border border-border/70 bg-background/50 p-0.5 shadow-sm">
               <button
                 type="button"
                 onClick={() => setFramework('next')}
                 disabled={disabled || loading}
+                aria-pressed={framework === 'next'}
                 className={cn(
-                  'rounded-md px-2 py-1 text-xs transition-all disabled:opacity-50 disabled:cursor-not-allowed',
+                  'rounded-lg px-2.5 py-1.5 text-xs font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed',
                   framework === 'next'
-                    ? 'bg-accent/20 text-accent'
-                    : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
+                    ? 'border border-accent/40 bg-accent text-accent-foreground shadow-md shadow-accent/20'
+                    : 'border border-transparent text-muted-foreground hover:bg-secondary hover:text-foreground'
                 )}
               >
                 Next.js
@@ -125,11 +126,12 @@ export function PromptInput({
                 type="button"
                 onClick={() => setFramework('react')}
                 disabled={disabled || loading}
+                aria-pressed={framework === 'react'}
                 className={cn(
-                  'rounded-md px-2 py-1 text-xs transition-all disabled:opacity-50 disabled:cursor-not-allowed',
+                  'rounded-lg px-2.5 py-1.5 text-xs font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed',
                   framework === 'react'
-                    ? 'bg-accent/20 text-accent'
-                    : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
+                    ? 'border border-accent/40 bg-accent text-accent-foreground shadow-md shadow-accent/20'
+                    : 'border border-transparent text-muted-foreground hover:bg-secondary hover:text-foreground'
                 )}
               >
                 React
@@ -138,11 +140,12 @@ export function PromptInput({
                 type="button"
                 onClick={() => setFramework('html')}
                 disabled={disabled || loading}
+                aria-pressed={framework === 'html'}
                 className={cn(
-                  'rounded-md px-2 py-1 text-xs transition-all disabled:opacity-50 disabled:cursor-not-allowed',
+                  'rounded-lg px-2.5 py-1.5 text-xs font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed',
                   framework === 'html'
-                    ? 'bg-accent/20 text-accent'
-                    : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
+                    ? 'border border-accent/40 bg-accent text-accent-foreground shadow-md shadow-accent/20'
+                    : 'border border-transparent text-muted-foreground hover:bg-secondary hover:text-foreground'
                 )}
               >
                 HTML

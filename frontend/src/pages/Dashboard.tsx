@@ -1,12 +1,11 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
 import { useAuthStore } from '@/store/authStore';
 import { useSidebarStore } from '@/store/sidebarStore';
 import api from '@/lib/api';
 import Button from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Sparkles, Send, Eye, Code, Monitor, Download, Maximize2, Minimize2, Paperclip, Wand2, Mic, RotateCw } from 'lucide-react';
+import { Sparkles, Send, Eye, Code, Monitor, Download, Paperclip, Wand2, Mic, RotateCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import WebsitePreview from '@/components/WebsitePreview';
 import { GeneratingLoader } from '@/components/GeneratingLoader';
@@ -115,7 +114,6 @@ const Dashboard = () => {
   const [activeComponentIndex, setActiveComponentIndex] = useState(0);
   const [stats, setStats] = useState({ totalProjects: 0, generations: 0, creditsUsed: 0, creditsRemaining: 5 });
   const [loadingHistoryWebsite, setLoadingHistoryWebsite] = useState(false);
-  const [realPreviewFullscreen, setRealPreviewFullscreen] = useState(false);
   /** Steps for left-panel processing status: thinking → generating files → done */
   const [generationStep, setGenerationStep] = useState<'thinking' | 'generating' | 'done'>('thinking');
   /** Add-on prompt for editing the current website in the same chat */
@@ -195,7 +193,6 @@ const Dashboard = () => {
       setEditLoading(false);
       setActiveTab('component-0');
       setActiveComponentIndex(0);
-      setRealPreviewFullscreen(false);
     }
   }, [websiteIdFromUrl]);
 
@@ -860,8 +857,8 @@ const Dashboard = () => {
                       className="w-full resize-none rounded-xl bg-transparent px-4 py-4 text-foreground placeholder:text-muted-foreground focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed text-sm"
                     />
                   </div>
-                  <div className="flex items-center justify-between px-3 pb-3">
-                    <div className="flex items-center gap-2">
+                  <div className="space-y-3 px-3 pb-3">
+                    <div className="flex flex-wrap items-center gap-2">
                       <button
                         type="button"
                         disabled={editLoading || loading}
@@ -898,16 +895,20 @@ const Dashboard = () => {
                           </>
                         )}
                       </button>
-                      <div className="flex items-center rounded-lg border border-border/60 bg-background/30 p-0.5">
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex shrink-0 items-center rounded-xl border border-border/70 bg-background/50 p-0.5 shadow-sm">
                         <button
                           type="button"
                           onClick={() => setFramework('next')}
                           disabled={editLoading || loading}
+                          aria-pressed={framework === 'next'}
                           className={cn(
-                            'rounded-md px-2 py-1 text-xs transition-all disabled:opacity-50 disabled:cursor-not-allowed',
+                            'rounded-lg px-2.5 py-1.5 text-xs font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed',
                             framework === 'next'
-                              ? 'bg-accent/20 text-accent'
-                              : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
+                              ? 'border border-accent/40 bg-accent text-accent-foreground shadow-md shadow-accent/20'
+                              : 'border border-transparent text-muted-foreground hover:bg-secondary hover:text-foreground'
                           )}
                         >
                           Next.js
@@ -916,11 +917,12 @@ const Dashboard = () => {
                           type="button"
                           onClick={() => setFramework('react')}
                           disabled={editLoading || loading}
+                          aria-pressed={framework === 'react'}
                           className={cn(
-                            'rounded-md px-2 py-1 text-xs transition-all disabled:opacity-50 disabled:cursor-not-allowed',
+                            'rounded-lg px-2.5 py-1.5 text-xs font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed',
                             framework === 'react'
-                              ? 'bg-accent/20 text-accent'
-                              : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
+                              ? 'border border-accent/40 bg-accent text-accent-foreground shadow-md shadow-accent/20'
+                              : 'border border-transparent text-muted-foreground hover:bg-secondary hover:text-foreground'
                           )}
                         >
                           React
@@ -929,41 +931,43 @@ const Dashboard = () => {
                           type="button"
                           onClick={() => setFramework('html')}
                           disabled={editLoading || loading}
+                          aria-pressed={framework === 'html'}
                           className={cn(
-                            'rounded-md px-2 py-1 text-xs transition-all disabled:opacity-50 disabled:cursor-not-allowed',
+                            'rounded-lg px-2.5 py-1.5 text-xs font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed',
                             framework === 'html'
-                              ? 'bg-accent/20 text-accent'
-                              : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
+                              ? 'border border-accent/40 bg-accent text-accent-foreground shadow-md shadow-accent/20'
+                              : 'border border-transparent text-muted-foreground hover:bg-secondary hover:text-foreground'
                           )}
                         >
                           HTML
                         </button>
                       </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleEdit()}
+                        disabled={!addOnPrompt.trim() || editLoading || loading}
+                        className={cn(
+                          'ml-auto flex shrink-0 items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all duration-200',
+                          addOnPrompt.trim() && !editLoading && !loading
+                            ? 'btn-gradient-border text-foreground hover:text-accent dark:text-green-300 dark:hover:text-green-200 active:scale-95'
+                            : 'bg-secondary text-muted-foreground cursor-not-allowed'
+                        )}
+                      >
+                        {editLoading ? (
+                          <>
+                            <Sparkles className="h-4 w-4 animate-pulse" />
+                            <span>Generating...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="h-4 w-4" />
+                            <span>Generate</span>
+                            <Send className="h-4 w-4" />
+                          </>
+                        )}
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => handleEdit()}
-                      disabled={!addOnPrompt.trim() || editLoading || loading}
-                      className={cn(
-                        'flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all duration-200',
-                        addOnPrompt.trim() && !editLoading && !loading
-                          ? 'btn-gradient-border text-foreground hover:text-accent dark:text-green-300 dark:hover:text-green-200 active:scale-95'
-                          : 'bg-secondary text-muted-foreground cursor-not-allowed'
-                      )}
-                    >
-                      {editLoading ? (
-                        <>
-                          <Sparkles className="h-4 w-4 animate-pulse" />
-                          <span>Generating...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Sparkles className="h-4 w-4" />
-                          <span>Generate</span>
-                          <Send className="h-4 w-4" />
-                        </>
-                      )}
-                    </button>
                   </div>
                 </div>
 
