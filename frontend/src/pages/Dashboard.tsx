@@ -5,7 +5,7 @@ import { useSidebarStore } from '@/store/sidebarStore';
 import api from '@/lib/api';
 import Button from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Sparkles, Send, Eye, Code, Monitor, Download, Paperclip, Wand2, Mic, RotateCw, Smartphone } from 'lucide-react';
+import { Sparkles, Send, Eye, Code, Monitor, Download, Paperclip, Wand2, Mic, RotateCw, Smartphone, FileText, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import WebsitePreview from '@/components/WebsitePreview';
 import { GeneratingLoader } from '@/components/GeneratingLoader';
@@ -82,6 +82,14 @@ interface ViteConfig {
 type WebsiteFramework = 'next' | 'react' | 'html';
 type PreviewDevice = 'desktop' | 'mobile';
 
+interface PromptAttachment {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  text?: string;
+}
+
 const inferFrameworkFromWebsite = (site: Partial<GeneratedWebsite> | null | undefined): WebsiteFramework => {
   if (!site) return 'next';
   if (site.framework === 'react' || site.framework === 'next' || site.framework === 'html') return site.framework;
@@ -140,6 +148,9 @@ const Dashboard = () => {
   const [addOnPrompt, setAddOnPrompt] = useState('');
   const [editLoading, setEditLoading] = useState(false);
   const [rebuildLoading, setRebuildLoading] = useState(false);
+  const [promptAttachments, setPromptAttachments] = useState<PromptAttachment[]>([]);
+  const [editAttachments, setEditAttachments] = useState<PromptAttachment[]>([]);
+  const editFileInputRef = useRef<HTMLInputElement>(null);
 
   const voice = useVoiceSynthesis();
 
@@ -181,6 +192,60 @@ const Dashboard = () => {
     'Change the hero title to Welcome',
     'Add a footer with social links',
   ];
+
+  const isReadableAttachment = (file: File) => {
+    const lower = file.name.toLowerCase();
+    return (
+      file.type.startsWith('text/') ||
+      /\.(txt|md|json|csv|html|css|js|jsx|ts|tsx|svg|xml|yml|yaml)$/i.test(lower)
+    );
+  };
+
+  const readAttachments = async (files: FileList): Promise<PromptAttachment[]> => {
+    const selected = Array.from(files).slice(0, 8);
+    return Promise.all(
+      selected.map(async (file) => {
+        let text: string | undefined;
+        if (isReadableAttachment(file)) {
+          try {
+            text = (await file.text()).slice(0, 12000);
+          } catch {
+            text = undefined;
+          }
+        }
+        return {
+          id: `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(36).slice(2, 8)}`,
+          name: file.name,
+          type: file.type || 'unknown',
+          size: file.size,
+          text,
+        };
+      }),
+    );
+  };
+
+  const appendAttachmentContext = (basePrompt: string, attachments: PromptAttachment[]) => {
+    if (attachments.length === 0) return basePrompt;
+    const context = attachments
+      .map((file, index) => {
+        const header = `Attachment ${index + 1}: ${file.name} (${file.type}, ${Math.round(file.size / 1024)} KB)`;
+        return file.text
+          ? `${header}\nContent:\n${file.text}`
+          : `${header}\nContent was not read in-browser. Treat this as a named visual/reference asset from the user.`;
+      })
+      .join('\n\n---\n\n');
+    return `${basePrompt.trim()}\n\nUse these attached files as context/reference:\n\n${context}`;
+  };
+
+  const handlePromptAttachFiles = async (files: FileList) => {
+    const next = await readAttachments(files);
+    setPromptAttachments((current) => [...current, ...next]);
+  };
+
+  const handleEditAttachFiles = async (files: FileList) => {
+    const next = await readAttachments(files);
+    setEditAttachments((current) => [...current, ...next]);
+  };
 
   // Advance generation step for "processing" feel (v0-style) while loading
   useEffect(() => {
@@ -399,6 +464,7 @@ const Dashboard = () => {
       alert('Please enter a prompt');
       return;
     }
+    const promptForRequest = appendAttachmentContext(finalPrompt, promptAttachments);
 
     setLoading(true);
     setIsGenerating(true);
@@ -419,7 +485,7 @@ const Dashboard = () => {
       }
 
       console.log('Making website generation request...', {
-        prompt: finalPrompt.substring(0, 50) + '...',
+        prompt: promptForRequest.substring(0, 50) + '...',
         websiteName,
         tokenLength: token.length
       });
@@ -434,7 +500,7 @@ const Dashboard = () => {
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          prompt: finalPrompt,
+          prompt: promptForRequest,
           websiteName: websiteNameFinal,
           framework,
           ...(currentUserId && { userId: currentUserId }),
@@ -516,6 +582,7 @@ const Dashboard = () => {
       });
 
       setGeneratedWebsite(saved);
+      setPromptAttachments([]);
       setFramework(inferFrameworkFromWebsite(saved));
       if (saved.id) syncWebsiteIdToUrl(saved.id);
       // Keep prompt and websiteName visible on the left for "generate again"
@@ -557,6 +624,7 @@ const Dashboard = () => {
   const handleEdit = async (overridePrompt?: string) => {
     const finalPrompt = overridePrompt || addOnPrompt;
     if (!generatedWebsite?.id || !finalPrompt.trim()) return;
+    const finalPromptWithAttachments = appendAttachmentContext(finalPrompt, editAttachments);
     setEditLoading(true);
     const token = localStorage.getItem('token');
     if (!token) {
@@ -567,12 +635,13 @@ const Dashboard = () => {
     }
 
     const websiteId = generatedWebsite.id;
-    const editPrompt = finalPrompt.trim();
+    const editPrompt = finalPromptWithAttachments.trim();
     const applySaved = (saved: GeneratedWebsite) => {
       const nextId = saved.id || websiteId;
       setGeneratedWebsite({ ...saved, id: nextId });
       setFramework(inferFrameworkFromWebsite(saved));
       setAddOnPrompt('');
+      setEditAttachments([]);
       if (nextId) syncWebsiteIdToUrl(nextId);
     };
 
@@ -776,6 +845,11 @@ const Dashboard = () => {
                 onGenerate={handleGenerate}
                 framework={framework}
                 setFramework={setFramework}
+                attachments={promptAttachments}
+                onAttachFiles={handlePromptAttachFiles}
+                onRemoveAttachment={(id) =>
+                  setPromptAttachments((current) => current.filter((file) => file.id !== id))
+                }
                 loading={loading}
               />
             </div>
@@ -881,17 +955,53 @@ const Dashboard = () => {
                       rows={3}
                       className="w-full resize-none rounded-xl bg-transparent px-4 py-4 text-foreground placeholder:text-muted-foreground focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed text-sm"
                     />
+                    {editAttachments.length > 0 && (
+                      <div className="px-3 pb-2">
+                        <div className="flex flex-wrap gap-1.5 rounded-xl border border-emerald-400/15 bg-black/25 p-2">
+                          {editAttachments.map((file) => (
+                            <span
+                              key={file.id}
+                              className="group inline-flex max-w-full items-center gap-1.5 rounded-lg border border-emerald-400/20 bg-emerald-400/10 px-2 py-1 text-xs text-emerald-100 transition-all hover:border-emerald-300/50 hover:bg-emerald-400/15"
+                            >
+                              <FileText className="h-3 w-3 shrink-0 text-emerald-300" />
+                              <span className="max-w-[140px] truncate">{file.name}</span>
+                              <span className="text-[10px] text-emerald-100/45">{Math.max(1, Math.round(file.size / 1024))}KB</span>
+                              <button
+                                type="button"
+                                onClick={() => setEditAttachments((current) => current.filter((item) => item.id !== file.id))}
+                                className="rounded-full p-0.5 text-emerald-100/55 transition hover:bg-red-500/15 hover:text-red-200"
+                                aria-label={`Remove ${file.name}`}
+                                title={`Remove ${file.name}`}
+                              >
+                                <X className="h-3 w-3" />
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                   <div className="space-y-3 px-3 pb-3">
                     <div className="flex flex-wrap items-center gap-2">
                       <button
                         type="button"
+                        onClick={() => editFileInputRef.current?.click()}
                         disabled={editLoading || loading}
                         className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground transition-all duration-200 hover:bg-secondary hover:text-foreground active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         <Paperclip className="h-4 w-4" />
                         <span className="hidden sm:inline">Attach</span>
                       </button>
+                      <input
+                        ref={editFileInputRef}
+                        type="file"
+                        multiple
+                        className="hidden"
+                        onChange={(event) => {
+                          if (event.target.files?.length) void handleEditAttachFiles(event.target.files);
+                          event.target.value = '';
+                        }}
+                      />
                       <button
                         type="button"
                         disabled={editLoading || loading}
