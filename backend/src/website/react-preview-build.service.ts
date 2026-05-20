@@ -12,6 +12,26 @@ import { Website } from '../entities/website.entity';
 type BuildStatus = 'queued' | 'building' | 'ready' | 'failed';
 type PreviewStorageMode = 'local' | 'r2';
 
+const DEVICE_PREVIEW_SCROLL_CSS = `
+
+/* WebGenius device preview: keep natural scrolling but hide browser scrollbars. */
+html,
+body {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: smooth;
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+*::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+}
+`;
+
 @Injectable()
 export class ReactPreviewBuildService {
   private readonly queue: string[] = [];
@@ -279,7 +299,7 @@ export class ReactPreviewBuildService {
     const mainJsxRaw = vite.mainJsx || vite.mainJs || this.defaultMainJsx(site.components || []);
     const mainJsxWithImports = this.ensureEntryImports(mainJsxRaw, site.components || []);
     const mainJsx = this.injectPreviewMessagingBridge(this.injectPreviewRouterBasename(mainJsxWithImports));
-    const styleCss = vite.styleCss || '';
+    const styleCss = this.withDevicePreviewScrollCss(vite.styleCss || '');
 
     await this.writeFileSafe(workspaceDir, 'package.json', packageJson);
     await this.writeFileSafe(workspaceDir, 'vite.config.js', viteConfig);
@@ -295,7 +315,7 @@ export class ReactPreviewBuildService {
   }
 
   private async writeStaticProjectFiles(distDir: string, site: Website): Promise<void> {
-    const css = site.cssCode || '';
+    const css = this.withDevicePreviewScrollCss(site.cssCode || '');
     const js = this.injectPreviewMessagingBridge(site.jsCode || '');
     const html = this.prepareStaticIndexHtml(site.htmlCode || '', css, js, site.websiteName || 'Static Preview');
 
@@ -336,7 +356,21 @@ export class ReactPreviewBuildService {
     if (js.trim() && !/src=["']\.?\/?script\.js["']/i.test(html)) {
       html = html.replace(/<\/body>/i, '  <script src="./script.js"></script>\n</body>');
     }
-    return html;
+    return this.injectDevicePreviewScrollStyle(html);
+  }
+
+  private withDevicePreviewScrollCss(css: string): string {
+    if ((css || '').includes('WebGenius device preview')) return css || '';
+    return `${css || ''}${DEVICE_PREVIEW_SCROLL_CSS}`;
+  }
+
+  private injectDevicePreviewScrollStyle(html: string): string {
+    if (!html || html.includes('WebGenius device preview')) return html;
+    const styleTag = `<style>${DEVICE_PREVIEW_SCROLL_CSS}</style>`;
+    if (/<\/head>/i.test(html)) {
+      return html.replace(/<\/head>/i, `  ${styleTag}\n</head>`);
+    }
+    return `${styleTag}\n${html}`;
   }
 
   private escapeHtml(input: string): string {

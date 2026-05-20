@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Send, Paperclip, Wand2, Sparkles, Mic } from 'lucide-react';
+import { Send, Paperclip, Wand2, Sparkles, Mic, LayoutTemplate } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useVoiceRecognition } from '@/lib/useVoiceRecognition';
 import { VoiceVisualizer } from '@/components/VoiceVisualizer';
@@ -9,6 +9,44 @@ const suggestions = [
   'E-commerce product page with reviews',
   'Dashboard with analytics charts',
   'Portfolio website with animations',
+];
+
+const templatePresets = [
+  {
+    name: 'SaaS Landing',
+    prompt:
+      'Create a polished SaaS landing page with a strong hero, product screenshots, feature sections, pricing cards, testimonials, FAQ, and a conversion-focused call to action. Make it responsive, modern, and trust-building.',
+  },
+  {
+    name: 'Portfolio',
+    prompt:
+      'Create a personal portfolio website with a memorable hero, about section, selected projects, skills, experience timeline, testimonials, and contact section. Make it refined, responsive, and visually distinctive.',
+  },
+  {
+    name: 'Restaurant',
+    prompt:
+      'Create a restaurant website with an appetizing hero, menu highlights, chef or story section, opening hours, gallery, reservation call to action, location details, and contact section. Make it warm, elegant, and mobile friendly.',
+  },
+  {
+    name: 'E-commerce',
+    prompt:
+      'Create an e-commerce storefront with a product-focused hero, category tiles, featured products, reviews, benefits, newsletter signup, cart-style interactions, and a polished responsive layout.',
+  },
+  {
+    name: 'Agency',
+    prompt:
+      'Create a creative agency website with a bold hero, services, case studies, process section, client logos, testimonials, team section, and contact call to action. Make it premium and conversion-focused.',
+  },
+  {
+    name: 'Dashboard',
+    prompt:
+      'Create a modern analytics dashboard with stat cards, charts, recent activity, project table, filters, sidebar navigation, and responsive layouts for desktop and mobile.',
+  },
+  {
+    name: 'Event Page',
+    prompt:
+      'Create an event landing page with a striking hero, date and venue details, speaker lineup, schedule, ticket tiers, sponsors, FAQ, and registration call to action. Make it energetic and responsive.',
+  },
 ];
 
 interface PromptInputProps {
@@ -31,6 +69,7 @@ export function PromptInput({
   disabled = false,
 }: PromptInputProps) {
   const [isFocused, setIsFocused] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false);
 
   const handleVoiceEnd = (finalTranscript: string) => {
     // When Voice recognition ends, if we have text we auto-generate
@@ -81,8 +120,15 @@ export function PromptInput({
             </button>
             <button
               type="button"
+              onClick={() => setShowTemplates((open) => !open)}
               disabled={disabled || loading}
-              className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground transition-all duration-200 hover:bg-secondary hover:text-foreground active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+              aria-pressed={showTemplates}
+              className={cn(
+                'flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-all duration-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed',
+                showTemplates
+                  ? 'bg-accent/10 text-accent'
+                  : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
+              )}
             >
               <Wand2 className="h-4 w-4" />
               <span className="hidden sm:inline">Templates</span>
@@ -179,6 +225,33 @@ export function PromptInput({
           </button>
         </div>
       </div>
+
+      {showTemplates && !loading && !disabled && (
+        <div className="mt-4 rounded-2xl border border-border/60 bg-card/80 p-3 shadow-sm">
+          <div className="mb-3 flex items-center gap-2 px-1 text-sm font-medium text-foreground">
+            <LayoutTemplate className="h-4 w-4 text-accent" />
+            Choose a starting template
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {templatePresets.map((template) => (
+              <button
+                key={template.name}
+                type="button"
+                onClick={() => {
+                  setPrompt(template.prompt);
+                  setShowTemplates(false);
+                }}
+                className="rounded-lg border border-border/60 bg-background/60 px-3 py-2.5 text-left transition-all duration-200 hover:border-accent/60 hover:bg-accent/5 active:scale-[0.99]"
+              >
+                <span className="block text-sm font-medium text-foreground">{template.name}</span>
+                <span className="mt-1 line-clamp-2 block text-xs leading-5 text-muted-foreground">
+                  {template.prompt}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Suggestions */}
       {!loading && !disabled && (

@@ -33,6 +33,8 @@ interface WebsitePreviewProps {
   className?: string;
   v0DemoUrl?: string;
   artifactUrl?: string;
+  hideToolbar?: boolean;
+  deviceMode?: 'desktop' | 'mobile';
 }
 
 // Known globals and reserved names that must never get a fallback definition
@@ -201,6 +203,8 @@ const WebsitePreview = ({
   className,
   v0DemoUrl,
   artifactUrl,
+  hideToolbar = false,
+  deviceMode = 'desktop',
 }: WebsitePreviewProps) => {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -221,6 +225,7 @@ const WebsitePreview = ({
     normalizedHostedUrl && normalizedHostedUrl.startsWith('/preview-artifacts')
       ? `${((import.meta.env?.VITE_API_URL as string | undefined) || 'http://localhost:3000').replace(/\/+$/, '')}${normalizedHostedUrl}`
       : normalizedHostedUrl;
+  const isMobileDeviceMode = deviceMode === 'mobile';
 
   useEffect(() => {
     console.log('[WebsitePreview] Source selection:', {
@@ -1461,53 +1466,55 @@ window.__PREVIEW_PARAMS__ = JSON.parse('${placeholderParamsEscaped}');
       ref={containerRef}
       className={`border rounded-xl overflow-hidden glass-panel flex flex-col h-full w-full relative ${className || ''} ${isFullscreen ? 'p-4' : ''}`}
     >
-      <div className="flex items-center justify-between p-2 border-b border-border/50 bg-muted/30 backdrop-blur-sm flex-shrink-0 z-10 gap-3">
-        <div className="flex items-center flex-1 max-w-sm ml-1 bg-background/50 border rounded text-xs px-2 py-1">
-          <Button variant="ghost" size="sm" onClick={handleReload} className="h-5 w-5 p-0 mr-1.5 rounded-sm text-muted-foreground hover:text-foreground">
-            <RotateCw className="h-3 w-3" />
-          </Button>
-          <Globe className="h-3 w-3 text-muted-foreground mr-1.5 flex-shrink-0" />
-          <input
-            type="text"
-            value={previewPath}
-            onChange={(e) => setPreviewPath(e.target.value)}
-            onKeyDown={handleNavigate}
-            list={routeListIdRef.current}
-            className="flex-1 bg-transparent border-none focus:outline-none text-muted-foreground font-mono"
-            spellCheck={false}
-          />
-          <datalist id={routeListIdRef.current}>
-            {routeSuggestions.map((route) => (
-              <option key={route} value={route} />
-            ))}
-          </datalist>
-        </div>
-        <div className="flex gap-1.5 flex-shrink-0">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={toggleFullscreen}
-            className="h-7 px-2 hover:bg-white/10"
-          >
-            {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-3 w-3" />}
-          </Button>
-          {onClose && (
+      {!hideToolbar && (
+        <div className="flex items-center justify-between p-2 border-b border-border/50 bg-muted/30 backdrop-blur-sm flex-shrink-0 z-10 gap-3">
+          <div className="flex items-center flex-1 max-w-sm ml-1 bg-background/50 border rounded text-xs px-2 py-1">
+            <Button variant="ghost" size="sm" onClick={handleReload} className="h-5 w-5 p-0 mr-1.5 rounded-sm text-muted-foreground hover:text-foreground">
+              <RotateCw className="h-3 w-3" />
+            </Button>
+            <Globe className="h-3 w-3 text-muted-foreground mr-1.5 flex-shrink-0" />
+            <input
+              type="text"
+              value={previewPath}
+              onChange={(e) => setPreviewPath(e.target.value)}
+              onKeyDown={handleNavigate}
+              list={routeListIdRef.current}
+              className="flex-1 bg-transparent border-none focus:outline-none text-muted-foreground font-mono"
+              spellCheck={false}
+            />
+            <datalist id={routeListIdRef.current}>
+              {routeSuggestions.map((route) => (
+                <option key={route} value={route} />
+              ))}
+            </datalist>
+          </div>
+          <div className="flex gap-1.5 flex-shrink-0">
             <Button
               variant="ghost"
               size="sm"
-              onClick={onClose}
+              onClick={toggleFullscreen}
               className="h-7 px-2 hover:bg-white/10"
             >
-              <X className="h-3 w-3" />
+              {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-3 w-3" />}
             </Button>
-          )}
+            {onClose && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onClose}
+                className="h-7 px-2 hover:bg-white/10"
+              >
+                <X className="h-3 w-3" />
+              </Button>
+            )}
+          </div>
         </div>
-      </div>
-      <div className="relative flex-1 min-h-0 bg-white">
+      )}
+      <div className={isMobileDeviceMode ? 'relative flex-1 min-h-0 overflow-hidden bg-white device-preview-viewport' : 'relative flex-1 min-h-0 bg-white'}>
         <iframe
           ref={iframeRef}
           src={hostedPreviewUrl || undefined}
-          className="w-full h-full border-0"
+          className={isMobileDeviceMode ? 'h-full w-full border-0 device-preview-frame' : 'w-full h-full border-0'}
           title="Website Preview"
           sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
           allowFullScreen

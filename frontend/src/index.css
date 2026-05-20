@@ -210,6 +210,95 @@
     box-shadow: 0 12px 40px 0 rgba(34, 197, 94, 0.1);
   }
 
+  .mobile-preview-shell,
+  .mobile-preview-shell:hover {
+    background: transparent !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+  }
+
+  .preview-studio {
+    isolation: isolate;
+  }
+
+  .preview-studio-grid {
+    background-image:
+      linear-gradient(rgba(34, 197, 94, 0.12) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(34, 197, 94, 0.12) 1px, transparent 1px);
+    background-size: 42px 42px;
+    mask-image: radial-gradient(circle at 50% 48%, black 0%, transparent 72%);
+    animation: studio-grid-drift 18s linear infinite;
+  }
+
+  .preview-studio-scan {
+    background:
+      linear-gradient(105deg, transparent 0%, rgba(255,255,255,0.06) 45%, transparent 60%),
+      radial-gradient(circle at 50% 35%, rgba(74, 222, 128, 0.18), transparent 46%);
+    animation: studio-light-sweep 7s ease-in-out infinite;
+  }
+
+  .preview-studio-shimmer {
+    position: relative;
+    overflow: hidden;
+    background: rgba(34, 197, 94, 0.08);
+  }
+
+  .preview-studio-shimmer::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    translate: -120% 0;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+    animation: studio-shimmer 1.8s ease-in-out infinite;
+  }
+
+  .preview-phone::after {
+    content: '';
+    pointer-events: none;
+    position: absolute;
+    inset: 7px;
+    z-index: 45;
+    border-radius: 37px;
+    background: linear-gradient(135deg, rgba(255,255,255,0.22), transparent 30%, transparent 66%, rgba(255,255,255,0.12));
+    mix-blend-mode: screen;
+  }
+
+  .device-preview-viewport {
+    contain: strict;
+  }
+
+  .device-preview-frame {
+    background: white;
+    color-scheme: light;
+  }
+
+  .device-preview-viewport,
+  .device-preview-viewport * {
+    scrollbar-width: none !important;
+    -ms-overflow-style: none !important;
+  }
+
+  .device-preview-viewport::-webkit-scrollbar,
+  .device-preview-viewport *::-webkit-scrollbar {
+    width: 0 !important;
+    height: 0 !important;
+    display: none !important;
+  }
+
+  @keyframes studio-grid-drift {
+    from { background-position: 0 0, 0 0; }
+    to { background-position: 42px 42px, 42px 42px; }
+  }
+
+  @keyframes studio-light-sweep {
+    0%, 100% { opacity: 0.22; transform: translateX(-4%); }
+    50% { opacity: 0.55; transform: translateX(4%); }
+  }
+
+  @keyframes studio-shimmer {
+    to { translate: 120% 0; }
+  }
+
   @keyframes blob {
     0% {
       transform: translate(0px, 0px) scale(1);

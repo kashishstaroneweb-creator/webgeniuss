@@ -5,7 +5,7 @@ import { useSidebarStore } from '@/store/sidebarStore';
 import api from '@/lib/api';
 import Button from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Sparkles, Send, Eye, Code, Monitor, Download, Paperclip, Wand2, Mic, RotateCw } from 'lucide-react';
+import { Sparkles, Send, Eye, Code, Monitor, Download, Paperclip, Wand2, Mic, RotateCw, Smartphone } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import WebsitePreview from '@/components/WebsitePreview';
 import { GeneratingLoader } from '@/components/GeneratingLoader';
@@ -13,6 +13,7 @@ import { PromptInput } from '@/components/PromptInput';
 import { StatsCards } from '@/components/StatsCards';
 import { RecentProjects } from '@/components/RecentProjects';
 import { VoiceVisualizer } from '@/components/VoiceVisualizer';
+import { MobilePreviewStudio } from '@/components/MobilePreviewStudio';
 import { useVoiceRecognition } from '@/lib/useVoiceRecognition';
 import { useVoiceSynthesis } from '@/lib/useVoiceSynthesis';
 import { useTypewriter } from '@/lib/useTypewriter';
@@ -44,6 +45,23 @@ function drainSseBlocks(buffer: string): { rest: string; events: { event?: strin
   return { rest, events };
 }
 
+function formatGenerationErrorMessage(rawMessage: string): string {
+  const raw = (rawMessage || '').trim();
+  if (!raw) return 'Failed to generate website';
+
+  try {
+    const parsed = JSON.parse(raw) as { error?: { type?: string; message?: string }; message?: string };
+    const providerType = parsed.error?.type || '';
+    const providerMessage = parsed.error?.message || parsed.message || raw;
+    if (/forbidden_error/i.test(providerType)) {
+      return `v0 refused this generation request (403 Forbidden${providerMessage ? `: ${providerMessage}` : ''}). Check the backend V0_API_KEY, v0 Platform API access, account plan/credits, and any V0_PLATFORM_MODEL_ID setting.`;
+    }
+    return providerMessage;
+  } catch {
+    return raw;
+  }
+}
+
 interface Component {
   name: string;
   type: string;
@@ -62,6 +80,7 @@ interface ViteConfig {
 }
 
 type WebsiteFramework = 'next' | 'react' | 'html';
+type PreviewDevice = 'desktop' | 'mobile';
 
 const inferFrameworkFromWebsite = (site: Partial<GeneratedWebsite> | null | undefined): WebsiteFramework => {
   if (!site) return 'next';
@@ -109,6 +128,7 @@ const Dashboard = () => {
   const [framework, setFramework] = useState<WebsiteFramework>('next');
   const [generatedWebsite, setGeneratedWebsite] = useState<GeneratedWebsite | null>(null);
   const [showCodeView, setShowCodeView] = useState(false);
+  const [previewDevice, setPreviewDevice] = useState<PreviewDevice>('desktop');
   const [isGenerating, setIsGenerating] = useState(false);
   const [activeTab, setActiveTab] = useState<string>('component-0');
   const [activeComponentIndex, setActiveComponentIndex] = useState(0);
@@ -422,8 +442,13 @@ const Dashboard = () => {
       });
 
       if (!streamRes.ok) {
-        const errBody = await streamRes.json().catch(() => ({} as { message?: string }));
-        throw new Error(errBody.message || `Generation failed (${streamRes.status})`);
+        const errBody = await streamRes.json().catch(() => ({} as { message?: string; providerError?: string }));
+        const err = new Error(
+          formatGenerationErrorMessage(errBody.message || `Generation failed (${streamRes.status})`)
+        );
+        (err as any).status = streamRes.status;
+        (err as any).errorData = errBody;
+        throw err;
       }
 
       const reader = streamRes.body?.getReader();
@@ -452,7 +477,7 @@ const Dashboard = () => {
           } else if (e.event === 'website-error') {
             try {
               const j = JSON.parse(e.data) as { message?: string };
-              streamError = j.message || 'website-error';
+              streamError = formatGenerationErrorMessage(j.message || 'website-error');
             } catch {
               streamError = 'website-error';
             }
@@ -498,8 +523,8 @@ const Dashboard = () => {
       setCollapsed(true);
     } catch (error: any) {
       const errorMessage = error.response?.data?.message || error.message || 'Failed to generate website';
-      const status = error.response?.status;
-      const errorData = error.response?.data;
+      const status = error.response?.status || error.status;
+      const errorData = error.response?.data || error.errorData;
       
       console.error('Website generation error:', {
         status,
@@ -1066,46 +1091,68 @@ const Dashboard = () => {
 
           {/* Right Side - Preview Section */}
           <div className="w-full lg:w-3/5 min-w-0 flex flex-col overflow-hidden h-full">
-            <Card className="flex-1 flex flex-col overflow-hidden h-full">
-              <CardHeader className="flex-shrink-0">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="flex items-center gap-2">
+            <Card
+              className={cn(
+                'flex-1 flex flex-col overflow-hidden h-full',
+                generatedWebsite && !showCodeView && previewDevice === 'mobile' &&
+                  'mobile-preview-shell border-0 bg-transparent shadow-none rounded-none py-0 gap-3'
+              )}
+            >
+              <CardHeader
+                className={cn(
+                  'flex-shrink-0',
+                  generatedWebsite && !showCodeView && previewDevice === 'mobile' && 'px-0 pt-0'
+                )}
+              >
+                <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                  <CardTitle
+                    className={cn(
+                      'flex min-w-0 items-center gap-2 text-base',
+                      generatedWebsite && !showCodeView && previewDevice === 'mobile' && 'hidden'
+                    )}
+                  >
                     {generatedWebsite ? (
                       <>
-                        <Monitor className="h-5 w-5" />
-                        {generatedWebsite.websiteName}
+                        <Monitor className="h-5 w-5 shrink-0" />
+                        <span className="truncate">{generatedWebsite.websiteName}</span>
                       </>
                     ) : (
                       <>
-                        <Sparkles className="h-5 w-5 animate-pulse" />
-                        {loadingHistoryWebsite ? 'Loading...' : 'Generating...'}
+                        <Sparkles className="h-5 w-5 shrink-0 animate-pulse" />
+                        <span>{loadingHistoryWebsite ? 'Loading...' : 'Generating...'}</span>
                       </>
                     )}
                   </CardTitle>
                   {generatedWebsite && (
-                    <div className="flex items-center gap-2">
+                    <div className="flex w-full flex-wrap items-center gap-2 xl:w-auto xl:justify-end">
                       {(generatedWebsite.framework === 'react' || generatedWebsite.framework === 'html') && (
                         <Button
                           variant="outline"
                           size="sm"
                           onClick={handleRebuildPreview}
                           disabled={rebuildLoading}
-                          className="gap-2"
+                          className={cn(
+                            'gap-2',
+                            !showCodeView && previewDevice === 'mobile' && 'hidden'
+                          )}
                           title="Rebuild preview from saved code (no extra v0 credits)"
                         >
                           <RotateCw className={`h-4 w-4 ${rebuildLoading ? 'animate-spin' : ''}`} />
-                          {rebuildLoading ? 'Rebuilding...' : 'Rebuild Preview'}
+                          <span className="hidden 2xl:inline">{rebuildLoading ? 'Rebuilding...' : 'Rebuild Preview'}</span>
                         </Button>
                       )}
                       <Button
                         variant="outline"
                         size="sm"
                         onClick={handleDownloadZip}
-                        className="gap-2"
+                        className={cn(
+                          'gap-2',
+                          !showCodeView && previewDevice === 'mobile' && 'hidden'
+                        )}
                         title="Download as ZIP"
                       >
                         <Download className="h-4 w-4" />
-                        Download ZIP
+                        <span className="hidden 2xl:inline">Download ZIP</span>
                       </Button>
                       <Button
                         variant="outline"
@@ -1121,25 +1168,70 @@ const Dashboard = () => {
                             }
                           }
                         }}
-                        className="gap-2"
+                        className={cn(
+                          'gap-2',
+                          !showCodeView && previewDevice === 'mobile' && 'hidden'
+                        )}
                       >
                         {showCodeView ? (
                           <>
                             <Eye className="h-4 w-4" />
-                            View Preview
+                            <span className="hidden 2xl:inline">View Preview</span>
                           </>
                         ) : (
                           <>
                             <Code className="h-4 w-4" />
-                            View Code
+                            <span className="hidden 2xl:inline">View Code</span>
                           </>
                         )}
                       </Button>
+                      <div
+                        className={cn(
+                          'ml-auto flex items-center rounded-full border border-border/70 bg-background/70 p-1 shadow-inner xl:ml-0',
+                          !showCodeView && previewDevice === 'mobile' && 'mx-auto'
+                        )}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => setPreviewDevice('desktop')}
+                          aria-pressed={previewDevice === 'desktop'}
+                          title="Show desktop preview"
+                          className={cn(
+                            'inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-xs font-medium transition-all',
+                            previewDevice === 'desktop'
+                              ? 'bg-accent text-accent-foreground shadow-sm shadow-accent/20'
+                              : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
+                          )}
+                        >
+                          <Monitor className="h-3.5 w-3.5" />
+                          <span className="hidden sm:inline">Desktop</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPreviewDevice('mobile')}
+                          aria-pressed={previewDevice === 'mobile'}
+                          title="Show mobile preview"
+                          className={cn(
+                            'inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-xs font-medium transition-all',
+                            previewDevice === 'mobile'
+                              ? 'bg-accent text-accent-foreground shadow-sm shadow-accent/20'
+                              : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
+                          )}
+                        >
+                          <Smartphone className="h-3.5 w-3.5" />
+                          <span className="hidden sm:inline">Mobile</span>
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>
               </CardHeader>
-              <CardContent className="flex-1 overflow-hidden flex flex-col pt-6 min-w-0">
+              <CardContent
+                className={cn(
+                  'flex-1 overflow-hidden flex flex-col pt-6 min-w-0',
+                  generatedWebsite && !showCodeView && previewDevice === 'mobile' && 'px-0 pt-2'
+                )}
+              >
                 {(loading || loadingHistoryWebsite) && !generatedWebsite ? (
                   <GeneratingLoader />
                 ) : generatedWebsite ? (
@@ -1547,7 +1639,7 @@ const Dashboard = () => {
                         )}
                       </div>
                     ) : (
-                      <div className="flex-1 overflow-auto h-full flex flex-col min-h-[600px] min-w-0">
+                      <div className="flex-1 overflow-hidden h-full flex flex-col min-h-0 min-w-0">
                         {(() => {
                           const usesArtifactPipeline =
                             generatedWebsite.framework === 'react' || generatedWebsite.framework === 'html';
@@ -1623,18 +1715,38 @@ const Dashboard = () => {
                           }
 
                           return (
-                            <WebsitePreview
-                              html={generatedWebsite.htmlCode}
-                              css={generatedWebsite.cssCode}
-                              js={generatedWebsite.jsCode}
-                              components={generatedWebsite.components}
-                              viteConfig={generatedWebsite.viteConfig}
-                              websiteName={generatedWebsite.websiteName}
-                              v0DemoUrl={generatedWebsite.v0DemoUrl}
-                              artifactUrl={generatedWebsite.reactArtifactUrl}
-                              prompt={generatedWebsite.prompt}
-                              className="h-full min-h-[600px]"
-                            />
+                            previewDevice === 'mobile' ? (
+                              <MobilePreviewStudio
+                              >
+                                <WebsitePreview
+                                  html={generatedWebsite.htmlCode}
+                                  css={generatedWebsite.cssCode}
+                                  js={generatedWebsite.jsCode}
+                                  components={generatedWebsite.components}
+                                  viteConfig={generatedWebsite.viteConfig}
+                                  websiteName={generatedWebsite.websiteName}
+                                  v0DemoUrl={generatedWebsite.v0DemoUrl}
+                                  artifactUrl={generatedWebsite.reactArtifactUrl}
+                                  prompt={generatedWebsite.prompt}
+                                  className="h-full min-h-0 rounded-none border-0 shadow-none"
+                                  hideToolbar
+                                  deviceMode="mobile"
+                                />
+                              </MobilePreviewStudio>
+                            ) : (
+                              <WebsitePreview
+                                html={generatedWebsite.htmlCode}
+                                css={generatedWebsite.cssCode}
+                                js={generatedWebsite.jsCode}
+                                components={generatedWebsite.components}
+                                viteConfig={generatedWebsite.viteConfig}
+                                websiteName={generatedWebsite.websiteName}
+                                v0DemoUrl={generatedWebsite.v0DemoUrl}
+                                artifactUrl={generatedWebsite.reactArtifactUrl}
+                                prompt={generatedWebsite.prompt}
+                                className="h-full min-h-[600px]"
+                              />
+                            )
                           );
                         })()}
                       </div>

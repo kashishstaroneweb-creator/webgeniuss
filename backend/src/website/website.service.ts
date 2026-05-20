@@ -946,7 +946,10 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       });
       const text = Buffer.concat(chunks).toString('utf8').slice(0, 8000);
       if (!res.headersSent) {
-        res.status(axiosRes.status).json({ message: text || `v0 returned HTTP ${axiosRes.status}` });
+        res.status(axiosRes.status).json({
+          message: this.formatV0HttpError(axiosRes.status, text),
+          providerError: text || null,
+        });
       }
       return;
     }
@@ -1170,7 +1173,10 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       });
       const text = Buffer.concat(chunks).toString('utf8').slice(0, 8000);
       if (!res.headersSent) {
-        res.status(axiosRes.status).json({ message: text || `v0 returned HTTP ${axiosRes.status}` });
+        res.status(axiosRes.status).json({
+          message: this.formatV0HttpError(axiosRes.status, text),
+          providerError: text || null,
+        });
       }
       return;
     }
@@ -2381,6 +2387,31 @@ DESIGN (MANDATORY - PRODUCTION-READY):
     if (c?.message && c.message !== e?.message) parts.push(`cause.message=${c.message}`);
     if (e?.code) parts.push(`code=${e.code}`);
     return parts.filter(Boolean).join(' | ');
+  }
+
+  private formatV0HttpError(status: number, rawBody: string): string {
+    const raw = (rawBody || '').trim();
+    let providerType = '';
+    let providerMessage = '';
+    try {
+      const parsed = JSON.parse(raw) as { error?: { type?: string; message?: string }; message?: string };
+      providerType = parsed.error?.type || '';
+      providerMessage = parsed.error?.message || parsed.message || '';
+    } catch {
+      providerMessage = raw;
+    }
+
+    if (status === 401) {
+      return 'v0 rejected the API key (401). Add a valid V0_API_KEY from v0 settings, restart the backend, and make sure OPENAI_API_KEY is not being used as the v0 key.';
+    }
+
+    if (status === 403 || /forbidden_error/i.test(providerType)) {
+      return `v0 refused this generation request (403 Forbidden${providerMessage ? `: ${providerMessage}` : ''}). Check that V0_API_KEY is a v0 Platform API key with access enabled, the account plan/credits allow Platform API usage, and V0_PLATFORM_MODEL_ID is allowed for that key.`;
+    }
+
+    return providerMessage
+      ? `v0 returned HTTP ${status}: ${providerMessage}`
+      : `v0 returned HTTP ${status}`;
   }
 
   /** Generated source files: Platform API returns them on `latestVersion.files` (name + content). */
