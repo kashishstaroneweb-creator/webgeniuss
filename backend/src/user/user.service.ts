@@ -20,13 +20,10 @@ export class UserService {
         throw new NotFoundException('User ID is required');
       }
 
-      console.log('UserService.findById - looking for user with ID:', id);
-      
       // Handle both string ID and ObjectId
       let objectId: ObjectId;
       try {
         objectId = new ObjectId(id);
-        console.log('UserService.findById - converted to ObjectId:', objectId.toString());
       } catch (error: any) {
         console.error('UserService.findById - Invalid ObjectId format:', id, error.message);
         throw new NotFoundException(`Invalid user ID format: ${id}`);
@@ -40,12 +37,6 @@ export class UserService {
         console.error('UserService.findById - User not found in database for ID:', id);
         throw new NotFoundException(`User not found with ID: ${id}`);
       }
-      
-      console.log('UserService.findById - User found:', {
-        email: user.email,
-        name: user.name,
-        has_id: !!(user as any)._id
-      });
       
       // Ensure id is accessible as string - handle both _id and id properties
       const userId = (user as any)._id;

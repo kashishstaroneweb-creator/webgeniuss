@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as https from 'https';
 import * as crypto from 'crypto';
+import { transformSync } from 'esbuild';
 import { Website } from '../entities/website.entity';
 
 type BuildStatus = 'queued' | 'building' | 'ready' | 'failed';
@@ -298,7 +299,10 @@ export class ReactPreviewBuildService {
     const indexHtml = vite.indexHtml || this.defaultIndexHtml(site.websiteName || 'React Preview');
     const mainJsxRaw = vite.mainJsx || vite.mainJs || this.defaultMainJsx(site.components || []);
     const mainJsxWithImports = this.ensureEntryImports(mainJsxRaw, site.components || []);
-    const mainJsx = this.injectPreviewMessagingBridge(this.injectPreviewRouterBasename(mainJsxWithImports));
+    const mainJsx = this.stripTypeScriptSyntaxForPreview(
+      this.injectPreviewMessagingBridge(this.injectPreviewRouterBasename(mainJsxWithImports)),
+      'src/main.jsx',
+    );
     const styleCss = this.withDevicePreviewScrollCss(vite.styleCss || '');
 
     await this.writeFileSafe(workspaceDir, 'package.json', packageJson);
@@ -310,7 +314,7 @@ export class ReactPreviewBuildService {
     for (const c of site.components || []) {
       const relPath = this.sanitizeRelativePath(c.path || `src/components/${c.name || 'Component'}.jsx`);
       if (!relPath) continue;
-      await this.writeFileSafe(workspaceDir, relPath, c.code || '');
+      await this.writeFileSafe(workspaceDir, relPath, this.stripTypeScriptSyntaxForPreview(c.code || '', relPath));
     }
   }
 
@@ -595,6 +599,35 @@ export class ReactPreviewBuildService {
     const abs = path.join(root, safeRel);
     await fs.promises.mkdir(path.dirname(abs), { recursive: true });
     await fs.promises.writeFile(abs, content, 'utf8');
+  }
+
+  private stripTypeScriptSyntaxForPreview(code: string, relPath: string): string {
+    if (!code || typeof code !== 'string') return code;
+    if (!/\.[cm]?[jt]sx?$/i.test(relPath)) return code;
+
+    const loader = /\.(?:[cm]?jsx|tsx)$/i.test(relPath) ? 'tsx' : 'ts';
+    try {
+      return transformSync(code, {
+        loader,
+        jsx: 'preserve',
+        format: 'esm',
+        target: 'es2020',
+        sourcemap: false,
+      }).code.trimEnd() + '\n';
+    } catch (error: any) {
+      console.warn('ReactPreviewBuildService.stripTypeScriptSyntaxForPreview - transform skipped:', {
+        relPath,
+        message: error?.message || String(error),
+      });
+      return this.stripCommonTypeScriptSyntaxForPreview(code);
+    }
+  }
+
+  private stripCommonTypeScriptSyntaxForPreview(code: string): string {
+    return code
+      .replace(/\(([^()\n;]+?)\s+as\s+[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*(?:<[^>]+>)?(?:\[\])?\)/g, '($1)')
+      .replace(/\(([^()\n;]+?)\s+as\s+keyof\s+typeof\s+[A-Za-z_$][\w$]*\)/g, '($1)')
+      .replace(/([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[[^\]]+\]|\([^)]*\))*)!\b/g, '$1');
   }
 
   private async runCommand(

@@ -11,7 +11,6 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       ignoreExpiration: false,
       secretOrKey: process.env.JWT_SECRET || 'your-secret-key',
     });
-    console.log('JwtStrategy initialized with secret:', process.env.JWT_SECRET ? 'SET' : 'NOT SET');
   }
 
   async validate(payload: any) {
@@ -21,8 +20,6 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         throw new UnauthorizedException('Invalid token payload');
       }
 
-      console.log('JWT validation - looking up user with ID:', payload.sub);
-      
       let user;
       try {
         user = await this.userService.findById(payload.sub);
@@ -49,8 +46,6 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       }
       
       const userIdString = userId?.toString ? userId.toString() : String(userId);
-      
-      console.log('JWT validation successful for user:', userIdString);
       
       // Return user object with proper id field
       return {
