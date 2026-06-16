@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Send, Paperclip, Wand2, Sparkles, Mic, LayoutTemplate, FileText, X } from 'lucide-react';
+import { Send, Paperclip, Wand2, Sparkles, Mic, LayoutTemplate, FileText, Image, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useVoiceRecognition } from '@/lib/useVoiceRecognition';
 import { VoiceVisualizer } from '@/components/VoiceVisualizer';
@@ -131,7 +131,7 @@ interface PromptInputProps {
   onGenerate: (overridePrompt?: string) => void;
   framework: 'next' | 'react' | 'html';
   setFramework: (value: 'next' | 'react' | 'html') => void;
-  attachments?: { id: string; name: string; size: number }[];
+  attachments?: { id: string; name: string; type?: string; size: number; dataUrl?: string }[];
   onAttachFiles?: (files: FileList) => void;
   onRemoveAttachment?: (id: string) => void;
   loading?: boolean;
@@ -153,6 +153,7 @@ export function PromptInput({
   const [isFocused, setIsFocused] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const canGenerate = prompt.trim().length > 0 || attachments.some((file) => !!file.dataUrl);
 
   const handleVoiceEnd = (finalTranscript: string) => {
     // When Voice recognition ends, if we have text we auto-generate
@@ -191,25 +192,55 @@ export function PromptInput({
           {attachments.length > 0 && (
             <div className="px-3 pb-2">
               <div className="flex flex-wrap gap-1.5 rounded-xl border border-emerald-400/15 bg-black/10 p-2 dark:bg-black/25">
-                {attachments.map((file) => (
-                  <span
-                    key={file.id}
-                    className="group inline-flex max-w-full items-center gap-1.5 rounded-lg border border-emerald-400/20 bg-emerald-400/10 px-2 py-1 text-xs text-emerald-100 transition-all hover:border-emerald-300/50 hover:bg-emerald-400/15"
-                  >
-                    <FileText className="h-3 w-3 shrink-0 text-emerald-300" />
-                    <span className="max-w-[150px] truncate">{file.name}</span>
-                    <span className="text-[10px] text-emerald-100/45">{Math.max(1, Math.round(file.size / 1024))}KB</span>
-                    <button
-                      type="button"
-                      onClick={() => onRemoveAttachment?.(file.id)}
-                      className="rounded-full p-0.5 text-emerald-100/55 transition hover:bg-red-500/15 hover:text-red-200"
-                      aria-label={`Remove ${file.name}`}
-                      title={`Remove ${file.name}`}
+                {attachments.map((file) =>
+                  file.dataUrl ? (
+                    <span
+                      key={file.id}
+                      className="group relative h-24 w-24 overflow-hidden rounded-xl border border-emerald-400/25 bg-black/25 text-xs text-emerald-100 shadow-sm transition-all hover:border-emerald-300/60"
                     >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </span>
-                ))}
+                      <img
+                        src={file.dataUrl}
+                        alt=""
+                        className="h-full w-full object-cover"
+                      />
+                      <span className="absolute inset-x-0 bottom-0 bg-black/65 px-2 py-1 text-[10px] leading-tight backdrop-blur-sm">
+                        <span className="block truncate">{file.name}</span>
+                        <span className="text-emerald-100/60">{Math.max(1, Math.round(file.size / 1024))}KB</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => onRemoveAttachment?.(file.id)}
+                        className="absolute right-1 top-1 rounded-full bg-black/65 p-1 text-emerald-100/80 backdrop-blur-sm transition hover:bg-red-500/80 hover:text-white"
+                        aria-label={`Remove ${file.name}`}
+                        title={`Remove ${file.name}`}
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </span>
+                  ) : (
+                    <span
+                      key={file.id}
+                      className="group inline-flex max-w-full items-center gap-1.5 rounded-lg border border-emerald-400/20 bg-emerald-400/10 px-2 py-1 text-xs text-emerald-100 transition-all hover:border-emerald-300/50 hover:bg-emerald-400/15"
+                    >
+                      {file.type?.startsWith('image/') ? (
+                        <Image className="h-3 w-3 shrink-0 text-emerald-300" />
+                      ) : (
+                        <FileText className="h-3 w-3 shrink-0 text-emerald-300" />
+                      )}
+                      <span className="max-w-[150px] truncate">{file.name}</span>
+                      <span className="text-[10px] text-emerald-100/45">{Math.max(1, Math.round(file.size / 1024))}KB</span>
+                      <button
+                        type="button"
+                        onClick={() => onRemoveAttachment?.(file.id)}
+                        className="rounded-full p-0.5 text-emerald-100/55 transition hover:bg-red-500/15 hover:text-red-200"
+                        aria-label={`Remove ${file.name}`}
+                        title={`Remove ${file.name}`}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ),
+                )}
               </div>
             </div>
           )}
@@ -231,6 +262,7 @@ export function PromptInput({
               ref={fileInputRef}
               type="file"
               multiple
+              accept="image/*,.txt,.md,.json,.csv,.html,.css,.js,.jsx,.ts,.tsx,.svg,.xml,.yml,.yaml"
               className="hidden"
               onChange={(event) => {
                 if (event.target.files?.length) onAttachFiles?.(event.target.files);
@@ -321,10 +353,10 @@ export function PromptInput({
           <button
             type="button"
             onClick={() => onGenerate()}
-            disabled={!prompt.trim() || loading || disabled}
+            disabled={!canGenerate || loading || disabled}
             className={cn(
               'flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all duration-200',
-              prompt.trim() && !loading && !disabled
+              canGenerate && !loading && !disabled
                 ? 'btn-gradient-border text-foreground hover:text-accent dark:text-green-300 dark:hover:text-green-200 active:scale-95'
                 : 'bg-secondary text-muted-foreground cursor-not-allowed'
             )}

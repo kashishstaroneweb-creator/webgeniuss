@@ -3,6 +3,9 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Website } from '../entities/website.entity';
 import { PromptHistory } from '../entities/prompt-history.entity';
+import { User } from '../entities/user.entity';
+import { CreditLedger } from '../entities/credit-ledger.entity';
+import { GenerationUsage } from '../entities/generation-usage.entity';
 import { ObjectId } from 'mongodb';
 import { createClient, type ChatDetail, type ChatsCreateRequest, type ChatsSendMessageRequest } from 'v0-sdk';
 import * as crypto from 'crypto';
@@ -15,6 +18,7 @@ import { CodeSanitizer } from './code-sanitizer';
 import { ReactPreviewBuildService } from './react-preview-build.service';
 
 type WebsiteFramework = 'next' | 'react' | 'html';
+type V0MessageAttachment = { url: string };
 
 @Injectable()
 export class WebsiteService {
@@ -47,11 +51,132 @@ export class WebsiteService {
     return 'next';
   }
 
+  private normalizeV0Attachments(attachments?: V0MessageAttachment[]): V0MessageAttachment[] | undefined {
+    if (!Array.isArray(attachments) || attachments.length === 0) return undefined;
+    const maxCount = Number(process.env.V0_MAX_IMAGE_ATTACHMENTS) || 4;
+    const maxUrlChars = Number(process.env.V0_MAX_ATTACHMENT_URL_CHARS) || 8_000_000;
+    const normalized = attachments
+      .map((item) => ({ url: typeof item?.url === 'string' ? item.url.trim() : '' }))
+      .filter((item) => {
+        if (!item.url || item.url.length > maxUrlChars) return false;
+        return /^data:image\/(?:png|jpe?g|webp|gif);base64,/i.test(item.url) || /^https?:\/\//i.test(item.url);
+      })
+      .slice(0, maxCount);
+    return normalized.length > 0 ? normalized : undefined;
+  }
+
+  private getCreditCost(kind: 'generate' | 'edit', framework: WebsiteFramework, attachments?: V0MessageAttachment[]): number {
+    const imageSurcharge = this.normalizeV0Attachments(attachments)?.length ? Number(process.env.CREDIT_COST_IMAGE_REFERENCE) || 1 : 0;
+    if (kind === 'edit') return (Number(process.env.CREDIT_COST_EDIT) || 1) + imageSurcharge;
+    if (framework === 'next') return (Number(process.env.CREDIT_COST_GENERATE_NEXT) || 3) + imageSurcharge;
+    if (framework === 'react') return (Number(process.env.CREDIT_COST_GENERATE_REACT) || 2) + imageSurcharge;
+    return (Number(process.env.CREDIT_COST_GENERATE_HTML) || 1) + imageSurcharge;
+  }
+
+  private promptPreview(prompt: string): string {
+    const clean = (prompt || '').replace(/\s+/g, ' ').trim();
+    return clean.length > 220 ? `${clean.slice(0, 220)}...` : clean;
+  }
+
+  private async beginUsage(args: {
+    userId: string;
+    kind: 'generate' | 'edit';
+    framework: WebsiteFramework;
+    prompt: string;
+    credits: number;
+    attachments?: V0MessageAttachment[];
+    websiteId?: string;
+  }) {
+    const user = await this.userRepository.findOne({ where: { _id: new ObjectId(args.userId) } as any });
+    if (!user) {
+      const err = new Error('User not found') as Error & { status?: number };
+      err.status = 404;
+      throw err;
+    }
+    if ((user.accountStatus || 'active') === 'suspended') {
+      const err = new Error('Your account is suspended. Contact support.') as Error & { status?: number };
+      err.status = 403;
+      throw err;
+    }
+    const balance = Number(user.creditsBalance ?? (Number(process.env.DEFAULT_USER_CREDITS) || 5));
+    if (balance < args.credits) {
+      const err = new Error(`Not enough credits. Required ${args.credits}, available ${balance}.`) as Error & { status?: number };
+      err.status = 402;
+      throw err;
+    }
+    return this.generationUsageRepository.save(
+      this.generationUsageRepository.create({
+        userId: args.userId,
+        websiteId: args.websiteId,
+        kind: args.kind,
+        promptPreview: this.promptPreview(args.prompt),
+        framework: args.framework,
+        imageAttached: !!this.normalizeV0Attachments(args.attachments)?.length,
+        status: 'started',
+        estimatedCostCredits: args.credits,
+      }),
+    );
+  }
+
+  private async completeUsageSuccess(
+    usage: GenerationUsage | undefined,
+    userId: string,
+    credits: number,
+    details: { websiteId?: string; v0ChatId?: string; v0DemoUrl?: string },
+  ) {
+    if (!usage) return;
+    const now = new Date();
+    const user = await this.userRepository.findOne({ where: { _id: new ObjectId(userId) } as any });
+    const before = Number(user?.creditsBalance || 0);
+    const after = Math.max(0, before - credits);
+    if (user) {
+      user.creditsBalance = after;
+      user.creditsUsed = Number(user.creditsUsed || 0) + credits;
+      await this.userRepository.save(user);
+      await this.creditLedgerRepository.save(
+        this.creditLedgerRepository.create({
+          userId,
+          type: 'generation',
+          amount: -credits,
+          balanceBefore: before,
+          balanceAfter: after,
+          reason: `${usage.kind} ${usage.framework || ''}`.trim(),
+          referenceId: details.websiteId || (usage as any)._id?.toString() || usage.id?.toString(),
+          createdBy: 'system',
+        }),
+      );
+    }
+    usage.status = 'success';
+    usage.actualCostCredits = credits;
+    usage.websiteId = details.websiteId || usage.websiteId;
+    usage.v0ChatId = details.v0ChatId;
+    usage.v0DemoUrl = details.v0DemoUrl;
+    usage.finishedAt = now;
+    usage.durationMs = now.getTime() - new Date(usage.startedAt || now).getTime();
+    await this.generationUsageRepository.save(usage);
+  }
+
+  private async completeUsageFailed(usage: GenerationUsage | undefined, error: unknown) {
+    if (!usage) return;
+    const now = new Date();
+    usage.status = 'failed';
+    usage.errorMessage = ((error as Error)?.message || String(error)).slice(0, 4000);
+    usage.finishedAt = now;
+    usage.durationMs = now.getTime() - new Date(usage.startedAt || now).getTime();
+    await this.generationUsageRepository.save(usage);
+  }
+
   constructor(
     @InjectRepository(Website)
     private websiteRepository: Repository<Website>,
     @InjectRepository(PromptHistory)
     private promptRepository: Repository<PromptHistory>,
+    @InjectRepository(User)
+    private userRepository: Repository<User>,
+    @InjectRepository(CreditLedger)
+    private creditLedgerRepository: Repository<CreditLedger>,
+    @InjectRepository(GenerationUsage)
+    private generationUsageRepository: Repository<GenerationUsage>,
     private reactPreviewBuildService: ReactPreviewBuildService,
   ) {
     const v0Key = WebsiteService.normalizeV0ApiKey(process.env.V0_API_KEY);
@@ -476,6 +601,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     userId: string;
     websiteName: string;
     prompt: string;
+    displayPrompt?: string;
     framework: WebsiteFramework;
     responseContent: string;
     websiteCode: any;
@@ -483,6 +609,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     v0DemoUrl?: string;
   }) {
     const { userId, websiteName, prompt, framework, responseContent, v0ChatId, v0DemoUrl } = args;
+    const promptForHistory = args.displayPrompt?.trim() || prompt;
     const websiteCode = this.normalizeWebsiteCodeShape(args.websiteCode);
 
     // Sanitize JSX and fix images: validate image URLs (HEAD), replace 404s with a relevant image (Unsplash by site theme, else Picsum), then replace imgur
@@ -603,7 +730,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       userId,
       websiteName,
       framework,
-      prompt,
+      prompt: promptForHistory,
       htmlCode: storeAsVite ? '' : htmlCode,
       cssCode: storeAsVite ? '' : cssCode,
       jsCode: storeAsVite ? '' : jsCode,
@@ -619,7 +746,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     await this.promptRepository.save(
       this.promptRepository.create({
         userId,
-        prompt,
+        prompt: promptForHistory,
         aiResponse: responseContent,
       }),
     );
@@ -655,10 +782,22 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     prompt: string,
     websiteName: string,
     framework?: string,
+    attachments?: V0MessageAttachment[],
+    displayPrompt?: string,
   ) {
     const resolvedFramework = this.normalizeFramework(framework);
+    const creditCost = this.getCreditCost('generate', resolvedFramework, attachments);
+    let usage: GenerationUsage | undefined;
     console.log('WebsiteService.generateWebsite - Starting:', { userId, websiteName, promptLength: prompt.length });
     try {
+      usage = await this.beginUsage({
+        userId,
+        kind: 'generate',
+        framework: resolvedFramework,
+        prompt: displayPrompt?.trim() || prompt,
+        credits: creditCost,
+        attachments,
+      });
       console.log('WebsiteService.generateWebsite - Calling v0 Platform API...');
       console.log(
         'WebsiteService.generateWebsite - v0 API Key:',
@@ -688,6 +827,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       let { responseContent, websiteCode, v0ChatId, v0DemoUrl } = await this.fetchWebsiteCodeFromV0(
         systemPrompt,
         userPrompt,
+        attachments,
       );
       console.log('WebsiteService.generateWebsite - demoUrl from fetchWebsiteCodeFromV0:', {
         chatId: v0ChatId || null,
@@ -701,17 +841,25 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
         });
       }
 
-      return this.persistWebsiteAfterV0Generation({
+      const saved = await this.persistWebsiteAfterV0Generation({
         userId,
         websiteName,
         prompt,
+        displayPrompt: displayPrompt?.trim() || prompt,
         framework: resolvedFramework,
         responseContent,
         websiteCode,
         v0ChatId,
         v0DemoUrl,
       });
+      await this.completeUsageSuccess(usage, userId, creditCost, {
+        websiteId: saved.id,
+        v0ChatId,
+        v0DemoUrl,
+      });
+      return saved;
     } catch (error) {
+      await this.completeUsageFailed(usage, error);
       console.error('WebsiteService.generateWebsite - Error:', {
         message: error.message,
         stack: error.stack,
@@ -897,8 +1045,27 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     prompt: string,
     websiteName: string,
     framework?: string,
+    attachments?: V0MessageAttachment[],
+    displayPrompt?: string,
   ): Promise<void> {
     const resolvedFramework = this.normalizeFramework(framework);
+    const creditCost = this.getCreditCost('generate', resolvedFramework, attachments);
+    let usage: GenerationUsage | undefined;
+    try {
+      usage = await this.beginUsage({
+        userId,
+        kind: 'generate',
+        framework: resolvedFramework,
+        prompt: displayPrompt?.trim() || prompt,
+        credits: creditCost,
+        attachments,
+      });
+    } catch (e: any) {
+      if (!res.headersSent) {
+        res.status(e?.status || 500).json({ message: e?.message || 'Credit check failed' });
+      }
+      return;
+    }
     const systemPrompt = this.getV0WebsiteSystemPrompt(resolvedFramework);
     const userMessage = this.buildV0GenerationUserMessage(prompt, websiteName, resolvedFramework);
     console.log('WebsiteService.pipeV0GenerationStream - outbound v0 payload preview:', {
@@ -913,6 +1080,8 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       system: systemPrompt,
       responseMode: 'experimental_stream',
     };
+    const normalizedAttachments = this.normalizeV0Attachments(attachments);
+    if (normalizedAttachments) body.attachments = normalizedAttachments;
     if (modelConfiguration) body.modelConfiguration = modelConfiguration;
 
     const timeout = Number(process.env.V0_STREAM_TIMEOUT_MS) || 600_000;
@@ -930,6 +1099,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
         validateStatus: () => true,
       });
     } catch (e: unknown) {
+      await this.completeUsageFailed(usage, e);
       if (!res.headersSent) {
         res.status(502).json({ message: this.formatV0NetworkError(e) });
       }
@@ -946,6 +1116,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       });
       const text = Buffer.concat(chunks).toString('utf8').slice(0, 8000);
       if (!res.headersSent) {
+        await this.completeUsageFailed(usage, new Error(this.formatV0HttpError(axiosRes.status, text)));
         res.status(axiosRes.status).json({
           message: this.formatV0HttpError(axiosRes.status, text),
           providerError: text || null,
@@ -1038,12 +1209,18 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
           userId,
           chatIdCaptured,
           websiteName,
-          prompt,
+          displayPrompt?.trim() || prompt,
           resolvedFramework,
         );
+        await this.completeUsageSuccess(usage, userId, creditCost, {
+          websiteId: saved.id,
+          v0ChatId: saved.v0ChatId || chatIdCaptured,
+          v0DemoUrl: saved.v0DemoUrl,
+        });
         writeSseAndEnd('website-saved', saved);
         res.end();
       } catch (e: unknown) {
+        await this.completeUsageFailed(usage, e);
         const msg = (e as Error)?.message || String(e);
         writeSseAndEnd('website-error', { message: msg });
         res.end();
@@ -1073,6 +1250,8 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     websiteId: string,
     editPrompt: string,
     framework?: string,
+    attachments?: V0MessageAttachment[],
+    displayEditPrompt?: string,
   ): Promise<void> {
     const website = await this.websiteRepository.findOne({
       where: { _id: new ObjectId(websiteId) } as any,
@@ -1099,6 +1278,26 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
           message:
             'This website has no v0 chat id (e.g. created before streaming). Use POST /website/:id/edit or regenerate once.',
         });
+      }
+      return;
+    }
+
+    const resolvedFramework = this.normalizeFramework(framework);
+    const creditCost = this.getCreditCost('edit', resolvedFramework, attachments);
+    let usage: GenerationUsage | undefined;
+    try {
+      usage = await this.beginUsage({
+        userId,
+        kind: 'edit',
+        framework: resolvedFramework,
+        prompt: displayEditPrompt?.trim() || editPrompt,
+        credits: creditCost,
+        attachments,
+        websiteId,
+      });
+    } catch (e: any) {
+      if (!res.headersSent) {
+        res.status(e?.status || 500).json({ message: e?.message || 'Credit check failed' });
       }
       return;
     }
@@ -1130,12 +1329,13 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       streamEditBaseline = undefined;
     }
 
-    const resolvedFramework = this.normalizeFramework(framework);
     const modelConfiguration = this.getV0ModelConfiguration();
     const body: Record<string, unknown> = {
       message: this.buildFrameworkScopedEditMessage((editPrompt || '').trim(), resolvedFramework),
       responseMode: 'experimental_stream',
     };
+    const normalizedAttachments = this.normalizeV0Attachments(attachments);
+    if (normalizedAttachments) body.attachments = normalizedAttachments;
     if (modelConfiguration) body.modelConfiguration = modelConfiguration;
 
     const timeout = Number(process.env.V0_STREAM_TIMEOUT_MS) || 600_000;
@@ -1157,6 +1357,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
         },
       );
     } catch (e: unknown) {
+      await this.completeUsageFailed(usage, e);
       if (!res.headersSent) {
         res.status(502).json({ message: this.formatV0NetworkError(e) });
       }
@@ -1173,6 +1374,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       });
       const text = Buffer.concat(chunks).toString('utf8').slice(0, 8000);
       if (!res.headersSent) {
+        await this.completeUsageFailed(usage, new Error(this.formatV0HttpError(axiosRes.status, text)));
         res.status(axiosRes.status).json({
           message: this.formatV0HttpError(axiosRes.status, text),
           providerError: text || null,
@@ -1278,13 +1480,19 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
           fresh,
           websiteId,
           websiteCode,
-          editPrompt.trim(),
+          displayEditPrompt?.trim() || editPrompt.trim(),
           resolvedChatId,
           v0DemoUrl,
         );
+        await this.completeUsageSuccess(usage, userId, creditCost, {
+          websiteId: saved.id || websiteId,
+          v0ChatId: resolvedChatId,
+          v0DemoUrl,
+        });
         writeSseAndEnd('website-saved', { ...saved, editV0Path: 'sendMessage' as const });
         res.end();
       } catch (e: unknown) {
+        await this.completeUsageFailed(usage, e);
         const msg = (e as Error)?.message || String(e);
         writeSseAndEnd('website-error', { message: msg });
         res.end();
@@ -1487,7 +1695,14 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
   /**
    * Edit: prefer `chats.sendMessage` + stored `v0ChatId` (v0-clone). Fallback: `chats.create` with inlined site JSON when no chat id.
    */
-  async editWebsite(websiteId: string, userId: string, editPrompt: string, framework?: string) {
+  async editWebsite(
+    websiteId: string,
+    userId: string,
+    editPrompt: string,
+    framework?: string,
+    attachments?: V0MessageAttachment[],
+    displayEditPrompt?: string,
+  ) {
     console.log('WebsiteService.editWebsite - Starting:', { websiteId, userId, editPromptLength: editPrompt.length });
     const website = await this.websiteRepository.findOne({
       where: { _id: new ObjectId(websiteId) } as any,
@@ -1510,38 +1725,50 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     }
     const resolvedFramework = this.normalizeFramework(framework);
     website.framework = resolvedFramework;
+    const creditCost = this.getCreditCost('edit', resolvedFramework, attachments);
+    const usage = await this.beginUsage({
+      userId,
+      kind: 'edit',
+      framework: resolvedFramework,
+      prompt: displayEditPrompt?.trim() || editPrompt,
+      credits: creditCost,
+      attachments,
+      websiteId,
+    });
 
-    const v0ChatIdTrimmed = website.v0ChatId?.trim();
-    const editV0Path = v0ChatIdTrimmed ? ('sendMessage' as const) : ('create_fallback' as const);
-    let websiteCodeRaw: any;
-    let newV0ChatId: string;
-    let newV0DemoUrl: string | undefined;
+    try {
+      const v0ChatIdTrimmed = website.v0ChatId?.trim();
+      const editV0Path = v0ChatIdTrimmed ? ('sendMessage' as const) : ('create_fallback' as const);
+      let websiteCodeRaw: any;
+      let newV0ChatId: string;
+      let newV0DemoUrl: string | undefined;
 
-    if (v0ChatIdTrimmed) {
-      console.log('WebsiteService.editWebsite - Continuing v0 chat via sendMessage:', v0ChatIdTrimmed);
-      const r = await this.fetchWebsiteCodeFromV0SendMessage(
-        v0ChatIdTrimmed,
-        this.buildFrameworkScopedEditMessage(editPrompt.trim(), resolvedFramework),
-      );
-      websiteCodeRaw = r.websiteCode;
-      newV0ChatId = r.v0ChatId;
-      newV0DemoUrl = r.v0DemoUrl;
-    } else {
-      console.log('WebsiteService.editWebsite - No v0ChatId; fallback chats.create + inlined site payload');
-      const isComponentBased =
-        resolvedFramework !== 'html' &&
-        ((website.components?.length ?? 0) > 0 ||
-          !!(website.viteConfig?.mainJsx || website.viteConfig?.mainJs));
+      if (v0ChatIdTrimmed) {
+        console.log('WebsiteService.editWebsite - Continuing v0 chat via sendMessage:', v0ChatIdTrimmed);
+        const r = await this.fetchWebsiteCodeFromV0SendMessage(
+          v0ChatIdTrimmed,
+          this.buildFrameworkScopedEditMessage(editPrompt.trim(), resolvedFramework),
+          attachments,
+        );
+        websiteCodeRaw = r.websiteCode;
+        newV0ChatId = r.v0ChatId;
+        newV0DemoUrl = r.v0DemoUrl;
+      } else {
+        console.log('WebsiteService.editWebsite - No v0ChatId; fallback chats.create + inlined site payload');
+        const isComponentBased =
+          resolvedFramework !== 'html' &&
+          ((website.components?.length ?? 0) > 0 ||
+            !!(website.viteConfig?.mainJsx || website.viteConfig?.mainJs));
 
-      const editSystemPrompt = isComponentBased
-        ? `You are an expert editor for React/Vite websites. You will receive the CURRENT website as a JSON object with "components" (array of { name, type, path, code, language }) and "viteConfig" (object with packageJson, viteConfig, indexHtml, mainJsx, styleCss). The user will give you ONE edit instruction. Your job is to return the COMPLETE updated website in the EXACT SAME JSON structure. Rules:
+        const editSystemPrompt = isComponentBased
+          ? `You are an expert editor for React/Vite websites. You will receive the CURRENT website as a JSON object with "components" (array of { name, type, path, code, language }) and "viteConfig" (object with packageJson, viteConfig, indexHtml, mainJsx, styleCss). The user will give you ONE edit instruction. Your job is to return the COMPLETE updated website in the EXACT SAME JSON structure. Rules:
 - Return ONLY valid JSON. No markdown, no explanation, no code blocks. Pure JSON starting with { and ending with }.
 - Change ONLY what the user asked. Keep all other components and config identical.
 - Preserve component names, paths, and file structure unless the user explicitly asks to add/rename/remove.
 - If adding new components, add them to the components array and update mainJsx to import and render them.
 - Keep the same code style and patterns. Do not strip or simplify existing code.
 - Output the full JSON: { "components": [...], "viteConfig": { ... } }.`
-        : `You are an expert editor for HTML/CSS/JS websites. You will receive the CURRENT website as HTML, CSS, and JS. The user will give you ONE edit instruction. Return a JSON object with "html", "css", "js" containing the FULL updated code. Rules:
+          : `You are an expert editor for HTML/CSS/JS websites. You will receive the CURRENT website as HTML, CSS, and JS. The user will give you ONE edit instruction. Return a JSON object with "html", "css", "js" containing the FULL updated code. Rules:
 - Return ONLY valid JSON: { "html": "...", "css": "...", "js": "..." }. No markdown, no explanation, no code fences.
 - "html", "css", and "js" must all be present and non-empty strings.
 - Change ONLY what the user asked. Keep everything else identical.
@@ -1550,25 +1777,34 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
 - Put all styling in "css" and all behavior in "js".
 - Escape strings for JSON (newlines as \\n, quotes escaped).`;
 
-      const userMessage = isComponentBased
-        ? `Target framework: ${resolvedFramework === 'react' ? 'React (Vite)' : 'Next.js'}\nCurrent website (JSON):\n${JSON.stringify({ components: website.components || [], viteConfig: website.viteConfig || {} })}\n\nUser edit request: ${editPrompt}`
-        : `Target framework: ${resolvedFramework === 'html' ? 'static HTML/CSS/JS' : 'HTML/CSS/JS'}\nCurrent HTML:\n${website.htmlCode || ''}\n\nCurrent CSS:\n${website.cssCode || ''}\n\nCurrent JS:\n${website.jsCode || ''}\n\nUser edit request: ${editPrompt}`;
+        const userMessage = isComponentBased
+          ? `Target framework: ${resolvedFramework === 'react' ? 'React (Vite)' : 'Next.js'}\nCurrent website (JSON):\n${JSON.stringify({ components: website.components || [], viteConfig: website.viteConfig || {} })}\n\nUser edit request: ${editPrompt}`
+          : `Target framework: ${resolvedFramework === 'html' ? 'static HTML/CSS/JS' : 'HTML/CSS/JS'}\nCurrent HTML:\n${website.htmlCode || ''}\n\nCurrent CSS:\n${website.cssCode || ''}\n\nCurrent JS:\n${website.jsCode || ''}\n\nUser edit request: ${editPrompt}`;
 
-      const r = await this.fetchWebsiteCodeFromV0(editSystemPrompt, userMessage);
-      websiteCodeRaw = r.websiteCode;
-      newV0ChatId = r.v0ChatId;
-      newV0DemoUrl = r.v0DemoUrl;
+        const r = await this.fetchWebsiteCodeFromV0(editSystemPrompt, userMessage, attachments);
+        websiteCodeRaw = r.websiteCode;
+        newV0ChatId = r.v0ChatId;
+        newV0DemoUrl = r.v0DemoUrl;
+      }
+
+      const saved = await this.saveWebsiteEditFromFetchedCode(
+        website,
+        websiteId,
+        websiteCodeRaw,
+        displayEditPrompt?.trim() || editPrompt,
+        newV0ChatId,
+        newV0DemoUrl,
+      );
+      await this.completeUsageSuccess(usage, userId, creditCost, {
+        websiteId: saved.id || websiteId,
+        v0ChatId: newV0ChatId,
+        v0DemoUrl: newV0DemoUrl,
+      });
+      return { ...saved, editV0Path };
+    } catch (error) {
+      await this.completeUsageFailed(usage, error);
+      throw error;
     }
-
-    const saved = await this.saveWebsiteEditFromFetchedCode(
-      website,
-      websiteId,
-      websiteCodeRaw,
-      editPrompt,
-      newV0ChatId,
-      newV0DemoUrl,
-    );
-    return { ...saved, editV0Path };
   }
 
   /**
@@ -2672,13 +2908,16 @@ DESIGN (MANDATORY - PRODUCTION-READY):
     systemPrompt: string,
     userMessage: string,
     responseMode: 'sync' | 'async' = 'async',
+    attachments?: V0MessageAttachment[],
   ): Promise<ChatDetail> {
     const modelConfiguration = this.getV0ModelConfiguration();
+    const normalizedAttachments = this.normalizeV0Attachments(attachments);
     const body: ChatsCreateRequest = {
       message: userMessage,
       system: systemPrompt,
       responseMode,
     };
+    if (normalizedAttachments) body.attachments = normalizedAttachments;
     if (modelConfiguration) body.modelConfiguration = modelConfiguration;
     console.log(
       'WebsiteService - v0 chats.create',
@@ -2741,12 +2980,15 @@ DESIGN (MANDATORY - PRODUCTION-READY):
       latestVersionUpdatedAt?: string;
       assistantTail?: { id?: string; updatedAt?: string };
     },
+    attachments?: V0MessageAttachment[],
   ): Promise<ChatDetail> {
     const modelConfiguration = this.getV0ModelConfiguration();
+    const normalizedAttachments = this.normalizeV0Attachments(attachments);
     const body: ChatsSendMessageRequest = {
       message,
       responseMode,
     };
+    if (normalizedAttachments) body.attachments = normalizedAttachments;
     if (modelConfiguration) body.modelConfiguration = modelConfiguration;
     console.log(
       'WebsiteService - v0 chats.sendMessage',
@@ -2842,6 +3084,7 @@ DESIGN (MANDATORY - PRODUCTION-READY):
   private async fetchWebsiteCodeFromV0(
     systemPrompt: string,
     userPrompt: string,
+    attachments?: V0MessageAttachment[],
   ): Promise<{ responseContent: string; websiteCode: any; v0ChatId: string; v0DemoUrl?: string }> {
     const MAX_V0_ATTEMPTS = Number(process.env.V0_MAX_RETRIES) || 3;
     const RETRY_DELAY_MS = 1500;
@@ -2865,7 +3108,7 @@ DESIGN (MANDATORY - PRODUCTION-READY):
       }
       let chat: ChatDetail;
       try {
-        chat = await this.invokeV0ChatCreate(systemPrompt, userPrompt, mode);
+        chat = await this.invokeV0ChatCreate(systemPrompt, userPrompt, mode, attachments);
       } catch (e: any) {
         console.warn('WebsiteService - v0 request error:', this.formatV0NetworkError(e));
         if (this.isV0NonRetryableHttpError(e)) {
@@ -2957,6 +3200,7 @@ DESIGN (MANDATORY - PRODUCTION-READY):
   private async fetchWebsiteCodeFromV0SendMessage(
     chatId: string,
     userMessage: string,
+    attachments?: V0MessageAttachment[],
   ): Promise<{ responseContent: string; websiteCode: any; v0ChatId: string; v0DemoUrl?: string }> {
     const MAX_V0_ATTEMPTS = Number(process.env.V0_MAX_RETRIES) || 3;
     const RETRY_DELAY_MS = 1500;
@@ -3004,7 +3248,7 @@ DESIGN (MANDATORY - PRODUCTION-READY):
       }
       let chat: ChatDetail;
       try {
-        chat = await this.invokeV0ChatSendMessage(chatId, userMessage, mode, priorArtifact);
+        chat = await this.invokeV0ChatSendMessage(chatId, userMessage, mode, priorArtifact, attachments);
       } catch (e: any) {
         console.warn('WebsiteService - v0 sendMessage error:', this.formatV0NetworkError(e));
         if (this.isV0NonRetryableHttpError(e)) {

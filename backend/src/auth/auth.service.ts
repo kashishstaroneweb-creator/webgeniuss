@@ -14,9 +14,11 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User, OAuthProvider, SubscriptionPlanType } from '../entities/user.entity';
 import { Role, RoleName } from '../entities/role.entity';
+import { CreditLedger } from '../entities/credit-ledger.entity';
 import * as bcrypt from 'bcrypt';
 import * as nodemailer from 'nodemailer';
 import { randomUUID } from 'crypto';
+import { ObjectId } from 'mongodb';
 
 import { SignUpDto } from './dto/signup.dto';
 import { LoginDto } from './dto/login.dto';
@@ -36,6 +38,8 @@ export class AuthService {
     private userRepository: Repository<User>,
     @InjectRepository(Role)
     private roleRepository: Repository<Role>,
+    @InjectRepository(CreditLedger)
+    private creditLedgerRepository: Repository<CreditLedger>,
     private jwtService: JwtService,
   ) {
     this.transporter = nodemailer.createTransport({
@@ -72,12 +76,32 @@ export class AuthService {
     return {
       ...rest,
       id: this.getUserIdString(user),
+      creditsBalance: Number((user as any).creditsBalance ?? 0),
+      creditsUsed: Number((user as any).creditsUsed ?? 0),
+      accountStatus: (user as any).accountStatus || 'active',
     };
   }
 
   // ─── Generate Secure 6-Digit OTP ─────────────────────────────────────
   private generateOtp(): string {
     return Math.floor(100000 + Math.random() * 900000).toString();
+  }
+
+  private async recordInitialCreditGrant(user: User, reason: string) {
+    const userId = this.getUserIdString(user);
+    const amount = Number((user as any).creditsBalance || 0);
+    if (amount <= 0) return;
+    await this.creditLedgerRepository.save(
+      this.creditLedgerRepository.create({
+        userId,
+        type: 'subscription_grant',
+        amount,
+        balanceBefore: 0,
+        balanceAfter: amount,
+        reason,
+        createdBy: 'system',
+      }),
+    );
   }
 
   // ─── Send OTP Email (black & green theme to match WebGenius) ───────────
@@ -229,9 +253,13 @@ export class AuthService {
       subscriptionPlan: SubscriptionPlanType.FREE,
       isOtpVerified: false,
       roleId: ((userRole as any)._id?.toString() || (userRole as any).id?.toString()),
+      creditsBalance: Number(process.env.DEFAULT_USER_CREDITS) || 5,
+      creditsUsed: 0,
+      accountStatus: 'active',
     });
 
     const savedUser = await this.userRepository.save(user);
+    await this.recordInitialCreditGrant(savedUser, 'Default free signup credits');
     
     const userIdString = this.getUserIdString(savedUser);
     console.log('SignUp - User created, ID:', userIdString);
@@ -264,6 +292,28 @@ export class AuthService {
 
     const userIdString = this.getUserIdString(user);
     console.log('Login - User authenticated, ID:', userIdString);
+
+    const role = user.roleId
+      ? await this.roleRepository.findOne({ where: { _id: new ObjectId(user.roleId) } as any })
+      : null;
+    const isSuperAdmin = role?.name === RoleName.SUPERADMIN;
+    const bypassAdminOtp = process.env.SUPER_ADMIN_BYPASS_OTP !== 'false';
+    if (isSuperAdmin && bypassAdminOtp) {
+      user.isOtpVerified = true;
+      user.otpCode = null;
+      user.otpExpiresAt = null;
+      user.otpSessionToken = null;
+      user.otpPurpose = null;
+      await this.userRepository.save(user);
+      const sanitizedUser = { ...this.sanitizeUser(user), roleName: role.name };
+      return {
+        user: sanitizedUser,
+        access_token: this.jwtService.sign({
+          sub: userIdString,
+          email: user.email,
+        }),
+      };
+    }
 
     const otpDetails = await this.initiateOtpFlow(user, 'login');
 
@@ -338,7 +388,10 @@ export class AuthService {
 
     await this.userRepository.save(user);
 
-    const sanitizedUser = this.sanitizeUser(user);
+    const role = user.roleId
+      ? await this.roleRepository.findOne({ where: { _id: new ObjectId(user.roleId) } as any })
+      : null;
+    const sanitizedUser = { ...this.sanitizeUser(user), roleName: role?.name || RoleName.USER };
     const accessToken = this.jwtService.sign({
       sub: sanitizedUser.id,
       email: user.email,
@@ -387,7 +440,10 @@ export class AuthService {
 
     await this.userRepository.save(user);
 
-    const sanitizedUser = this.sanitizeUser(user);
+    const role = user.roleId
+      ? await this.roleRepository.findOne({ where: { _id: new ObjectId(user.roleId) } as any })
+      : null;
+    const sanitizedUser = { ...this.sanitizeUser(user), roleName: role?.name || RoleName.USER };
     const accessToken = this.jwtService.sign({
       sub: sanitizedUser.id,
       email: user.email,
@@ -431,8 +487,12 @@ export class AuthService {
         isOtpVerified: true,
         subscriptionPlan: SubscriptionPlanType.FREE,
         roleId: ((userRole as any)._id?.toString() || (userRole as any).id?.toString()),
+        creditsBalance: Number(process.env.DEFAULT_USER_CREDITS) || 5,
+        creditsUsed: 0,
+        accountStatus: 'active',
       });
       await this.userRepository.save(user);
+      await this.recordInitialCreditGrant(user, 'Default OAuth signup credits');
     } else if (!user.oauthId) {
       // Link OAuth account to existing user
       user.oauthId = userData.oauthId;

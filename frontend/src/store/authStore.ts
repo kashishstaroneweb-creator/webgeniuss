@@ -5,6 +5,10 @@ interface User {
   name: string;
   email: string;
   subscriptionPlan: string;
+  roleName?: string;
+  creditsBalance?: number;
+  creditsUsed?: number;
+  accountStatus?: string;
   themePreference?: string;
 }
 

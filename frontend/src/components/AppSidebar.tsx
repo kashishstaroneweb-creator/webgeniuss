@@ -6,6 +6,7 @@ import {
   User,
   History,
   CreditCard,
+  ShieldCheck,
   Sparkles,
   ChevronLeft,
   ChevronDown,
@@ -43,6 +44,10 @@ export function AppSidebar() {
   const [recentsVisible, setRecentsVisible] = useState(INITIAL_RECENTS);
   const [recentsExpanded, setRecentsExpanded] = useState(true);
   const [recentsLoading, setRecentsLoading] = useState(false);
+  const canAccessAdmin = user?.roleName === 'superadmin' || user?.roleName === 'admin';
+  const visibleNavItems = canAccessAdmin
+    ? [...navItems, { icon: ShieldCheck, label: 'Admin', href: '/admin' }]
+    : navItems;
 
   useEffect(() => {
     const fetchRecents = async () => {
@@ -142,7 +147,7 @@ export function AppSidebar() {
       {/* Navigation */}
       <nav className="flex-1 overflow-hidden flex flex-col">
         <div className="space-y-1 px-3 py-2">
-          {navItems.map((item) => {
+          {visibleNavItems.map((item) => {
             const Icon = item.icon;
             const isActive = location.pathname === item.href;
             return (

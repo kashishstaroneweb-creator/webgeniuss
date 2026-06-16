@@ -4,9 +4,10 @@ import { SubscriptionService } from './subscription.service';
 import { SubscriptionController } from './subscription.controller';
 import { SubscriptionPlan } from '../entities/subscription-plan.entity';
 import { User } from '../entities/user.entity';
+import { CreditLedger } from '../entities/credit-ledger.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([SubscriptionPlan, User])],
+  imports: [TypeOrmModule.forFeature([SubscriptionPlan, User, CreditLedger])],
   controllers: [SubscriptionController],
   providers: [SubscriptionService],
   exports: [SubscriptionService],

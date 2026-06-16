@@ -92,7 +92,8 @@ const Login = () => {
 
       if (data?.access_token && data?.user) {
         setAuth(data.user, data.access_token);
-        navigate('/dashboard');
+        const isAdmin = data.user?.roleName === 'superadmin' || data.user?.roleName === 'admin';
+        navigate(isAdmin ? '/admin' : '/dashboard');
         return;
       }
 
@@ -127,7 +128,8 @@ const Login = () => {
       });
       setAuth(data.user, data.access_token);
       resetOtpState();
-      navigate('/dashboard');
+      const isAdmin = data.user?.roleName === 'superadmin' || data.user?.roleName === 'admin';
+      navigate(isAdmin ? '/admin' : '/dashboard');
     } catch (err: any) {
       setError(err.response?.data?.message || 'Failed to verify OTP');
     } finally {

@@ -7,6 +7,7 @@ import { PromptModule } from './prompt/prompt.module';
 import { SubscriptionModule } from './subscription/subscription.module';
 import { WebsiteModule } from './website/website.module';
 import { RoleModule } from './role/role.module';
+import { AdminModule } from './admin/admin.module';
 import { LoggingMiddleware } from './common/middleware/logging.middleware';
 
 @Module({
@@ -29,6 +30,7 @@ import { LoggingMiddleware } from './common/middleware/logging.middleware';
     SubscriptionModule,
     WebsiteModule,
     RoleModule,
+    AdminModule,
   ],
 })
 export class AppModule implements NestModule {

@@ -5,7 +5,7 @@ import { useSidebarStore } from '@/store/sidebarStore';
 import api from '@/lib/api';
 import Button from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Sparkles, Send, Eye, Code, Monitor, Download, Paperclip, Wand2, Mic, RotateCw, Smartphone, FileText, X } from 'lucide-react';
+import { Sparkles, Send, Eye, Code, Monitor, Download, Paperclip, Wand2, Mic, RotateCw, Smartphone, FileText, Image, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import WebsitePreview from '@/components/WebsitePreview';
 import { GeneratingLoader } from '@/components/GeneratingLoader';
@@ -88,6 +88,7 @@ interface PromptAttachment {
   type: string;
   size: number;
   text?: string;
+  dataUrl?: string;
 }
 
 const inferFrameworkFromWebsite = (site: Partial<GeneratedWebsite> | null | undefined): WebsiteFramework => {
@@ -201,11 +202,33 @@ const Dashboard = () => {
     );
   };
 
+  const isImageAttachment = (file: File) => {
+    return file.type.startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(file.name);
+  };
+
+  const readFileAsDataUrl = (file: File): Promise<string | undefined> => {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : undefined);
+      reader.onerror = () => resolve(undefined);
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const getV0ImageAttachments = (attachments: PromptAttachment[]) => {
+    return attachments
+      .filter((file) => file.dataUrl?.startsWith('data:image/'))
+      .slice(0, 4)
+      .map((file) => ({ url: file.dataUrl as string }));
+  };
+
   const readAttachments = async (files: FileList): Promise<PromptAttachment[]> => {
     const selected = Array.from(files).slice(0, 8);
+    const maxImageBytes = 5 * 1024 * 1024;
     return Promise.all(
       selected.map(async (file) => {
         let text: string | undefined;
+        let dataUrl: string | undefined;
         if (isReadableAttachment(file)) {
           try {
             text = (await file.text()).slice(0, 12000);
@@ -213,12 +236,16 @@ const Dashboard = () => {
             text = undefined;
           }
         }
+        if (isImageAttachment(file) && file.size <= maxImageBytes) {
+          dataUrl = await readFileAsDataUrl(file);
+        }
         return {
           id: `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(36).slice(2, 8)}`,
           name: file.name,
           type: file.type || 'unknown',
           size: file.size,
           text,
+          dataUrl,
         };
       }),
     );
@@ -229,6 +256,9 @@ const Dashboard = () => {
     const context = attachments
       .map((file, index) => {
         const header = `Attachment ${index + 1}: ${file.name} (${file.type}, ${Math.round(file.size / 1024)} KB)`;
+        if (file.dataUrl) {
+          return `${header}\nImage reference attached. Use it as the visual/layout/style reference for the website.`;
+        }
         return file.text
           ? `${header}\nContent:\n${file.text}`
           : `${header}\nContent was not read in-browser. Treat this as a named visual/reference asset from the user.`;
@@ -459,9 +489,14 @@ const Dashboard = () => {
   };
 
   const handleGenerate = async (overridePrompt?: string) => {
-    const finalPrompt = overridePrompt || prompt;
-    if (!finalPrompt.trim()) {
-      alert('Please enter a prompt');
+    const imageAttachments = getV0ImageAttachments(promptAttachments);
+    const finalPrompt =
+      (overridePrompt || prompt).trim() ||
+      (imageAttachments.length > 0
+        ? 'Create a complete website based on the attached image reference. Match its layout, visual style, spacing, colors, and content hierarchy as closely as possible while making the result responsive and production-ready.'
+        : '');
+    if (!finalPrompt.trim() && imageAttachments.length === 0) {
+      alert('Please enter a prompt or attach an image reference');
       return;
     }
     const promptForRequest = appendAttachmentContext(finalPrompt, promptAttachments);
@@ -501,8 +536,10 @@ const Dashboard = () => {
         },
         body: JSON.stringify({
           prompt: promptForRequest,
+          displayPrompt: finalPrompt,
           websiteName: websiteNameFinal,
           framework,
+          attachments: imageAttachments,
           ...(currentUserId && { userId: currentUserId }),
         }),
       });
@@ -622,8 +659,13 @@ const Dashboard = () => {
   };
 
   const handleEdit = async (overridePrompt?: string) => {
-    const finalPrompt = overridePrompt || addOnPrompt;
-    if (!generatedWebsite?.id || !finalPrompt.trim()) return;
+    const imageAttachments = getV0ImageAttachments(editAttachments);
+    const finalPrompt =
+      (overridePrompt || addOnPrompt).trim() ||
+      (imageAttachments.length > 0
+        ? 'Update this website using the attached image reference. Match its layout, visual style, spacing, colors, and content hierarchy as closely as possible while preserving the existing project intent.'
+        : '');
+    if (!generatedWebsite?.id || (!finalPrompt.trim() && imageAttachments.length === 0)) return;
     const finalPromptWithAttachments = appendAttachmentContext(finalPrompt, editAttachments);
     setEditLoading(true);
     const token = localStorage.getItem('token');
@@ -654,14 +696,19 @@ const Dashboard = () => {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ editPrompt, framework }),
+        body: JSON.stringify({
+          editPrompt,
+          displayEditPrompt: finalPrompt,
+          framework,
+          attachments: imageAttachments,
+        }),
       });
 
       // No v0 thread: backend only supports sync full-site edit
       if (streamRes.status === 422) {
         const res = await api.post<GeneratedWebsite & { message?: string }>(
           `/website/${websiteId}/edit`,
-          { editPrompt, framework },
+          { editPrompt, displayEditPrompt: finalPrompt, framework, attachments: imageAttachments },
           { timeout: EDIT_SYNC_FALLBACK_TIMEOUT_MS }
         );
         applySaved({ ...res.data, id: res.data.id || websiteId });
@@ -958,25 +1005,55 @@ const Dashboard = () => {
                     {editAttachments.length > 0 && (
                       <div className="px-3 pb-2">
                         <div className="flex flex-wrap gap-1.5 rounded-xl border border-emerald-400/15 bg-black/25 p-2">
-                          {editAttachments.map((file) => (
-                            <span
-                              key={file.id}
-                              className="group inline-flex max-w-full items-center gap-1.5 rounded-lg border border-emerald-400/20 bg-emerald-400/10 px-2 py-1 text-xs text-emerald-100 transition-all hover:border-emerald-300/50 hover:bg-emerald-400/15"
-                            >
-                              <FileText className="h-3 w-3 shrink-0 text-emerald-300" />
-                              <span className="max-w-[140px] truncate">{file.name}</span>
-                              <span className="text-[10px] text-emerald-100/45">{Math.max(1, Math.round(file.size / 1024))}KB</span>
-                              <button
-                                type="button"
-                                onClick={() => setEditAttachments((current) => current.filter((item) => item.id !== file.id))}
-                                className="rounded-full p-0.5 text-emerald-100/55 transition hover:bg-red-500/15 hover:text-red-200"
-                                aria-label={`Remove ${file.name}`}
-                                title={`Remove ${file.name}`}
+                          {editAttachments.map((file) =>
+                            file.dataUrl ? (
+                              <span
+                                key={file.id}
+                                className="group relative h-24 w-24 overflow-hidden rounded-xl border border-emerald-400/25 bg-black/25 text-xs text-emerald-100 shadow-sm transition-all hover:border-emerald-300/60"
                               >
-                                <X className="h-3 w-3" />
-                              </button>
-                            </span>
-                          ))}
+                                <img
+                                  src={file.dataUrl}
+                                  alt=""
+                                  className="h-full w-full object-cover"
+                                />
+                                <span className="absolute inset-x-0 bottom-0 bg-black/65 px-2 py-1 text-[10px] leading-tight backdrop-blur-sm">
+                                  <span className="block truncate">{file.name}</span>
+                                  <span className="text-emerald-100/60">{Math.max(1, Math.round(file.size / 1024))}KB</span>
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditAttachments((current) => current.filter((item) => item.id !== file.id))}
+                                  className="absolute right-1 top-1 rounded-full bg-black/65 p-1 text-emerald-100/80 backdrop-blur-sm transition hover:bg-red-500/80 hover:text-white"
+                                  aria-label={`Remove ${file.name}`}
+                                  title={`Remove ${file.name}`}
+                                >
+                                  <X className="h-3.5 w-3.5" />
+                                </button>
+                              </span>
+                            ) : (
+                              <span
+                                key={file.id}
+                                className="group inline-flex max-w-full items-center gap-1.5 rounded-lg border border-emerald-400/20 bg-emerald-400/10 px-2 py-1 text-xs text-emerald-100 transition-all hover:border-emerald-300/50 hover:bg-emerald-400/15"
+                              >
+                                {file.type.startsWith('image/') ? (
+                                  <Image className="h-3 w-3 shrink-0 text-emerald-300" />
+                                ) : (
+                                  <FileText className="h-3 w-3 shrink-0 text-emerald-300" />
+                                )}
+                                <span className="max-w-[140px] truncate">{file.name}</span>
+                                <span className="text-[10px] text-emerald-100/45">{Math.max(1, Math.round(file.size / 1024))}KB</span>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditAttachments((current) => current.filter((item) => item.id !== file.id))}
+                                  className="rounded-full p-0.5 text-emerald-100/55 transition hover:bg-red-500/15 hover:text-red-200"
+                                  aria-label={`Remove ${file.name}`}
+                                  title={`Remove ${file.name}`}
+                                >
+                                  <X className="h-3 w-3" />
+                                </button>
+                              </span>
+                            ),
+                          )}
                         </div>
                       </div>
                     )}
@@ -996,6 +1073,7 @@ const Dashboard = () => {
                         ref={editFileInputRef}
                         type="file"
                         multiple
+                        accept="image/*,.txt,.md,.json,.csv,.html,.css,.js,.jsx,.ts,.tsx,.svg,.xml,.yml,.yaml"
                         className="hidden"
                         onChange={(event) => {
                           if (event.target.files?.length) void handleEditAttachFiles(event.target.files);
@@ -1081,10 +1159,10 @@ const Dashboard = () => {
                       <button
                         type="button"
                         onClick={() => handleEdit()}
-                        disabled={!addOnPrompt.trim() || editLoading || loading}
+                        disabled={(!addOnPrompt.trim() && !editAttachments.some((file) => !!file.dataUrl)) || editLoading || loading}
                         className={cn(
                           'ml-auto flex shrink-0 items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all duration-200',
-                          addOnPrompt.trim() && !editLoading && !loading
+                          (addOnPrompt.trim() || editAttachments.some((file) => !!file.dataUrl)) && !editLoading && !loading
                             ? 'btn-gradient-border text-foreground hover:text-accent dark:text-green-300 dark:hover:text-green-200 active:scale-95'
                             : 'bg-secondary text-muted-foreground cursor-not-allowed'
                         )}

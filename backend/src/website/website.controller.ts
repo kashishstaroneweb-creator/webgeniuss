@@ -31,6 +31,8 @@ export class WebsiteController {
         generateDto.prompt,
         generateDto.websiteName || `Website ${Date.now()}`,
         generateDto.framework,
+        generateDto.attachments,
+        generateDto.displayPrompt,
       );
       console.log('WebsiteController.generate - Success, website ID:', result.id);
       return result;
@@ -66,6 +68,8 @@ export class WebsiteController {
         generateDto.prompt,
         websiteName,
         generateDto.framework,
+        generateDto.attachments,
+        generateDto.displayPrompt,
       );
     } catch (error: any) {
       if (!res.headersSent) {
@@ -182,6 +186,8 @@ export class WebsiteController {
         websiteId,
         editDto.editPrompt,
         editDto.framework,
+        editDto.attachments,
+        editDto.displayEditPrompt,
       );
     } catch (error: any) {
       if (!res.headersSent) {
@@ -210,6 +216,8 @@ export class WebsiteController {
         userId,
         editDto.editPrompt,
         editDto.framework,
+        editDto.attachments,
+        editDto.displayEditPrompt,
       );
     } catch (error: any) {
       const message = error?.message || 'Unknown error during edit';

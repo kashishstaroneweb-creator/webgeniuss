@@ -4,12 +4,14 @@ import { useAuthStore } from '@/store/authStore';
 import { AppSidebar } from '@/components/AppSidebar';
 import { AppHeader } from '@/components/AppHeader';
 import { AuroraBackground } from '@/components/AuroraBackground';
+import Button from '@/components/ui/Button';
 import Login from '@/pages/Login';
 import ForgotPassword from '@/pages/ForgotPassword';
 import Dashboard from '@/pages/Dashboard';
 import Profile from '@/pages/Profile';
 import History from '@/pages/History';
 import Subscription from '@/pages/Subscription';
+import AdminPanel from '@/pages/AdminPanel';
 
 const AuthCallback = () => {
   const [searchParams] = useSearchParams();
@@ -27,7 +29,8 @@ const AuthCallback = () => {
         .then((res) => res.json())
         .then((user) => {
           setAuth(user, token);
-          window.location.href = '/dashboard';
+          const isAdmin = user?.roleName === 'superadmin' || user?.roleName === 'admin';
+          window.location.href = isAdmin ? '/admin' : '/dashboard';
         })
         .catch(() => {
           window.location.href = '/login';
@@ -39,10 +42,28 @@ const AuthCallback = () => {
 };
 
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
-  const { isAuthenticated } = useAuthStore();
+  const { isAuthenticated, user } = useAuthStore();
+  const isAdmin = user?.roleName === 'superadmin' || user?.roleName === 'admin';
 
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />;
+  }
+  if (isAdmin) {
+    return <Navigate to="/admin" replace />;
+  }
+
+  return <>{children}</>;
+};
+
+const AdminRoute = ({ children }: { children: React.ReactNode }) => {
+  const { user, isAuthenticated } = useAuthStore();
+  const canAccessAdmin = user?.roleName === 'superadmin' || user?.roleName === 'admin';
+
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />;
+  }
+  if (!canAccessAdmin) {
+    return <Navigate to="/dashboard" replace />;
   }
 
   return <>{children}</>;
@@ -65,8 +86,39 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
   );
 };
 
+const AdminLayout = ({ children }: { children: React.ReactNode }) => {
+  const { user, logout } = useAuthStore();
+
+  return (
+    <>
+      <AuroraBackground />
+      <div className="relative z-10 flex h-screen flex-col bg-transparent p-4 text-foreground">
+        <header className="mb-4 flex h-16 shrink-0 items-center justify-between rounded-3xl border border-border/50 bg-white/70 px-6 backdrop-blur-xl dark:bg-black/40">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-emerald-300">Admin Analytics</p>
+            <h1 className="text-lg font-semibold">WebGenius Command Center</h1>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="hidden text-right sm:block">
+              <p className="text-sm font-medium">{user?.name || 'Admin'}</p>
+              <p className="text-xs text-muted-foreground">{user?.email}</p>
+            </div>
+            <Button variant="outline" size="sm" onClick={logout}>
+              Logout
+            </Button>
+          </div>
+        </header>
+        <main className="flex-1 overflow-y-auto rounded-3xl border border-border/50 bg-white/70 backdrop-blur-xl dark:bg-black/40">
+          {children}
+        </main>
+      </div>
+    </>
+  );
+};
+
 function App() {
-  const { isAuthenticated } = useAuthStore();
+  const { isAuthenticated, user } = useAuthStore();
+  const isAdmin = user?.roleName === 'superadmin' || user?.roleName === 'admin';
 
   useEffect(() => {
     // Initialize theme early to prevent flash and respect system preference.
@@ -80,10 +132,19 @@ function App() {
   return (
     <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <Routes>
-        <Route path="/login" element={isAuthenticated ? <Navigate to="/dashboard" /> : <Login />} />
+        <Route
+          path="/login"
+          element={
+            isAuthenticated ? (
+              <Navigate to={isAdmin ? '/admin' : '/dashboard'} />
+            ) : (
+              <Login />
+            )
+          }
+        />
         <Route
           path="/forgot-password"
-          element={isAuthenticated ? <Navigate to="/dashboard" /> : <ForgotPassword />}
+          element={isAuthenticated ? <Navigate to={isAdmin ? '/admin' : '/dashboard'} /> : <ForgotPassword />}
         />
         <Route path="/auth/callback" element={<AuthCallback />} />
         <Route
@@ -124,6 +185,16 @@ function App() {
                 <Subscription />
               </Layout>
             </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin"
+          element={
+            <AdminRoute>
+              <AdminLayout>
+                <AdminPanel />
+              </AdminLayout>
+            </AdminRoute>
           }
         />
         <Route

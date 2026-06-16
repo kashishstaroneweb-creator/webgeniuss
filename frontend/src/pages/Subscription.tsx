@@ -34,19 +34,16 @@ const Subscription = () => {
 
   const handleUpgrade = async (planName: string) => {
     try {
-      await api.post('/subscription/upgrade', { planType: planName.toLowerCase() });
-      updateUser({ subscriptionPlan: planName.toLowerCase() });
+      const res = await api.post('/subscription/upgrade', { planType: planName.toLowerCase() });
+      updateUser({
+        subscriptionPlan: planName.toLowerCase(),
+        creditsBalance: res.data?.creditsBalance,
+        creditsUsed: res.data?.creditsUsed,
+      });
       alert(`Upgraded to ${planName} plan!`);
     } catch (error: any) {
       alert(error.response?.data?.message || 'Failed to upgrade plan');
     }
-  };
-
-  const planMap: Record<string, string> = {
-    free: 'Free',
-    basic: 'Basic',
-    premium: 'Premium',
-    enterprise: 'Enterprise',
   };
 
   return (

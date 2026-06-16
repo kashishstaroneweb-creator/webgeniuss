@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { createPortal } from 'react-dom';
 import { X, Maximize2, Minimize2, RotateCw, Globe } from 'lucide-react';
 import Button from './ui/Button';
+import { GeneratingLoader } from './GeneratingLoader';
 
 interface Component {
   name: string;
@@ -36,6 +36,8 @@ interface WebsitePreviewProps {
   hideToolbar?: boolean;
   deviceMode?: 'desktop' | 'mobile';
 }
+
+const HOSTED_PREVIEW_MIN_LOADER_MS = 5000;
 
 // Known globals and reserved names that must never get a fallback definition
 const PREVIEW_KNOWN_GLOBALS = new Set([
@@ -209,6 +211,8 @@ const WebsitePreview = ({
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [previewPath, setPreviewPath] = useState('/');
+  const hostedPreviewLoadStartedAtRef = useRef(Date.now());
+  const hostedPreviewLoaderTimeoutRef = useRef<number | null>(null);
   const routeListIdRef = useRef(`preview-route-options-${Math.random().toString(36).slice(2, 8)}`);
   const hostedPreviewUrlRaw = artifactUrl || v0DemoUrl;
   const isLocalPreviewArtifactUrl = !!(
@@ -226,6 +230,24 @@ const WebsitePreview = ({
       ? `${((import.meta.env?.VITE_API_URL as string | undefined) || 'http://localhost:3000').replace(/\/+$/, '')}${normalizedHostedUrl}`
       : normalizedHostedUrl;
   const isMobileDeviceMode = deviceMode === 'mobile';
+  const [isHostedPreviewLoading, setIsHostedPreviewLoading] = useState(!!hostedPreviewUrl);
+
+  useEffect(() => {
+    hostedPreviewLoadStartedAtRef.current = Date.now();
+    if (hostedPreviewLoaderTimeoutRef.current) {
+      window.clearTimeout(hostedPreviewLoaderTimeoutRef.current);
+      hostedPreviewLoaderTimeoutRef.current = null;
+    }
+    setIsHostedPreviewLoading(!!hostedPreviewUrl);
+  }, [hostedPreviewUrl]);
+
+  useEffect(() => {
+    return () => {
+      if (hostedPreviewLoaderTimeoutRef.current) {
+        window.clearTimeout(hostedPreviewLoaderTimeoutRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     console.log('[WebsitePreview] Source selection:', {
@@ -570,11 +592,6 @@ const WebsitePreview = ({
                 const componentNamesForImports = siteComponents
                   .filter(c => c.language === 'jsx' || c.language === 'js' || c.language === 'tsx')
                   .map(c => c.name.replace(/\s+/g, ''));
-                // Case-insensitive set so "Header" and "header" both treated as component (avoid placeholder for either)
-                const componentNamesLower = new Set(componentNamesForImports.map((n) => n.toLowerCase()));
-                const isComponentName = (name: string) =>
-                  componentNamesForImports.includes(name) || (name && componentNamesLower.has(name.toLowerCase()));
-
                 // Remove ALL import statements (including component imports); replace data/utils imports with defaults so variables exist
                 // Pattern: import React from 'react';
                 processedMain = processedMain.replace(/import\s+React\s+from\s+['"]react['"];?\s*/gm, '');
@@ -1388,7 +1405,36 @@ window.__PREVIEW_PARAMS__ = JSON.parse('${placeholderParamsEscaped}');
       // ignore cross-origin/postMessage timing errors
     }
     if (hostedPreviewUrl && iframeRef.current) {
+      hostedPreviewLoadStartedAtRef.current = Date.now();
+      if (hostedPreviewLoaderTimeoutRef.current) {
+        window.clearTimeout(hostedPreviewLoaderTimeoutRef.current);
+        hostedPreviewLoaderTimeoutRef.current = null;
+      }
+      setIsHostedPreviewLoading(true);
       iframeRef.current.src = hostedPreviewUrl;
+      return;
+    }
+    loadIframeContent();
+  };
+
+  const handleIframeLoad = () => {
+    if (hostedPreviewUrl) {
+      const currentSrc = iframeRef.current?.src || '';
+      if (!currentSrc || currentSrc === 'about:blank') {
+        return;
+      }
+
+      const elapsed = Date.now() - hostedPreviewLoadStartedAtRef.current;
+      const remaining = Math.max(0, HOSTED_PREVIEW_MIN_LOADER_MS - elapsed);
+
+      if (hostedPreviewLoaderTimeoutRef.current) {
+        window.clearTimeout(hostedPreviewLoaderTimeoutRef.current);
+      }
+
+      hostedPreviewLoaderTimeoutRef.current = window.setTimeout(() => {
+        setIsHostedPreviewLoading(false);
+        hostedPreviewLoaderTimeoutRef.current = null;
+      }, remaining);
       return;
     }
     loadIframeContent();
@@ -1448,14 +1494,25 @@ window.__PREVIEW_PARAMS__ = JSON.parse('${placeholderParamsEscaped}');
               )}
             </div>
           </div>
-          <iframe
-            ref={iframeRef}
-            src={hostedPreviewUrl || undefined}
-            className="flex-1 w-full border-0"
-            title="Website Preview"
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-            onLoad={loadIframeContent}
-          />
+          <div className="relative flex-1 min-h-0 bg-white">
+            <iframe
+              ref={iframeRef}
+              src={hostedPreviewUrl || undefined}
+              className={`h-full w-full border-0 transition-opacity duration-300 ${isHostedPreviewLoading ? 'opacity-0' : 'opacity-100'}`}
+              title="Website Preview"
+              sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+              onLoad={handleIframeLoad}
+            />
+            {isHostedPreviewLoading && (
+              <div className="absolute inset-0 z-10 bg-background">
+                <GeneratingLoader
+                  variant="building"
+                  title="Loading preview..."
+                  subtitle="Starting hosted sandbox"
+                />
+              </div>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -1514,12 +1571,21 @@ window.__PREVIEW_PARAMS__ = JSON.parse('${placeholderParamsEscaped}');
         <iframe
           ref={iframeRef}
           src={hostedPreviewUrl || undefined}
-          className={isMobileDeviceMode ? 'h-full w-full border-0 device-preview-frame' : 'w-full h-full border-0'}
+          className={`${isMobileDeviceMode ? 'h-full w-full border-0 device-preview-frame' : 'w-full h-full border-0'} transition-opacity duration-300 ${isHostedPreviewLoading ? 'opacity-0' : 'opacity-100'}`}
           title="Website Preview"
           sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
           allowFullScreen
-          onLoad={loadIframeContent}
+          onLoad={handleIframeLoad}
         />
+        {isHostedPreviewLoading && (
+          <div className="absolute inset-0 z-10 bg-background">
+            <GeneratingLoader
+              variant="building"
+              title="Loading preview..."
+              subtitle="Starting hosted sandbox"
+            />
+          </div>
+        )}
       </div>
     </div>
   );

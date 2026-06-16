@@ -62,6 +62,15 @@ export class User {
   })
   subscriptionPlan: SubscriptionPlanType;
 
+  @Column({ default: 5 })
+  creditsBalance: number;
+
+  @Column({ default: 0 })
+  creditsUsed: number;
+
+  @Column({ default: 'active' })
+  accountStatus: 'active' | 'suspended';
+
   @Column({ nullable: true })
   roleId?: string;
 

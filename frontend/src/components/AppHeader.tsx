@@ -5,6 +5,7 @@ import { useAuthStore } from '@/store/authStore';
 
 export function AppHeader() {
   const { user } = useAuthStore();
+  const creditsBalance = Number(user?.creditsBalance ?? 0);
 
   return (
     <header className="flex h-16 items-center justify-between border border-border/50 glass-panel px-6 rounded-3xl shrink-0">
@@ -41,7 +42,7 @@ export function AppHeader() {
           className="gap-2 border-border bg-transparent transition-all duration-200"
         >
           <span className="h-2 w-2 rounded-full bg-accent" />
-          <span>5 Credits</span>
+          <span>{creditsBalance} Credits</span>
         </Button>
         <ThemeToggle />
       </div>
