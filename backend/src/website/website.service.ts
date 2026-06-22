@@ -6,6 +6,7 @@ import { PromptHistory } from '../entities/prompt-history.entity';
 import { User } from '../entities/user.entity';
 import { CreditLedger } from '../entities/credit-ledger.entity';
 import { GenerationUsage } from '../entities/generation-usage.entity';
+import { WebsiteTemplate } from '../entities/website-template.entity';
 import { ObjectId } from 'mongodb';
 import { createClient, type ChatDetail, type ChatsCreateRequest, type ChatsSendMessageRequest } from 'v0-sdk';
 import * as crypto from 'crypto';
@@ -177,6 +178,8 @@ export class WebsiteService {
     private creditLedgerRepository: Repository<CreditLedger>,
     @InjectRepository(GenerationUsage)
     private generationUsageRepository: Repository<GenerationUsage>,
+    @InjectRepository(WebsiteTemplate)
+    private templateRepository: Repository<WebsiteTemplate>,
     private reactPreviewBuildService: ReactPreviewBuildService,
   ) {
     const v0Key = WebsiteService.normalizeV0ApiKey(process.env.V0_API_KEY);
@@ -191,6 +194,94 @@ export class WebsiteService {
     if (process.env.V0_DEBUG_AUTH === '1') {
       console.log('WebsiteService - V0_DEBUG_AUTH: key length=', apiKey?.length ?? 0, 'baseUrl=', baseUrl);
     }
+  }
+
+  private objectIdString(entity: any): string {
+    return (entity?._id || entity?.id)?.toString();
+  }
+
+  private serializeTemplate(template: WebsiteTemplate) {
+    return {
+      ...template,
+      id: this.objectIdString(template),
+    };
+  }
+
+  async listPublishedTemplates() {
+    const templates = await this.templateRepository.find({
+      where: { status: 'published' } as any,
+      order: { sortOrder: 'ASC', createdAt: 'DESC' } as any,
+    });
+    return templates.map((template) => this.serializeTemplate(template));
+  }
+
+  async getPublishedTemplateById(templateId: string) {
+    if (!ObjectId.isValid(templateId)) {
+      const err = new Error('Template not found') as Error & { status?: number };
+      err.status = 404;
+      throw err;
+    }
+    const template = await this.templateRepository.findOne({ where: { _id: new ObjectId(templateId) } as any });
+    if (!template || template.status !== 'published') {
+      const err = new Error('Template not found') as Error & { status?: number };
+      err.status = 404;
+      throw err;
+    }
+    return this.serializeTemplate(template);
+  }
+
+  private async resolveTemplateForGeneration(templateId?: string) {
+    if (!templateId) return null;
+    if (!ObjectId.isValid(templateId)) {
+      const err = new Error('Template not found or not published') as Error & { status?: number };
+      err.status = 404;
+      throw err;
+    }
+    const template = await this.templateRepository.findOne({ where: { _id: new ObjectId(templateId) } as any });
+    if (!template || template.status !== 'published') {
+      const err = new Error('Template not found or not published') as Error & { status?: number };
+      err.status = 404;
+      throw err;
+    }
+    return template;
+  }
+
+  private summarizeTemplateForPrompt(template: WebsiteTemplate) {
+    const componentList = (template.components || [])
+      .slice(0, 16)
+      .map((item) => `${item.type}: ${item.path || item.name}`)
+      .join('\n');
+    const codeSource =
+      template.viteConfig?.mainJsx ||
+      template.viteConfig?.mainJs ||
+      template.htmlCode ||
+      '';
+    const codeExcerpt = codeSource.slice(0, 18000);
+
+    return [
+      `Template name: ${template.name}`,
+      `Template category: ${template.category || 'General'}`,
+      `Template framework: ${template.framework || 'react'}`,
+      template.description ? `Template description: ${template.description}` : '',
+      template.tags?.length ? `Template tags: ${template.tags.join(', ')}` : '',
+      template.basePrompt ? `Template design brief:\n${template.basePrompt.slice(0, 4000)}` : '',
+      componentList ? `Template files/sections:\n${componentList}` : '',
+      codeExcerpt ? `Template code excerpt to preserve visual structure from:\n${codeExcerpt}` : '',
+    ].filter(Boolean).join('\n\n');
+  }
+
+  private buildPromptWithTemplate(prompt: string, websiteName: string, template: WebsiteTemplate | null) {
+    if (!template) return prompt;
+    return [
+      `The user selected a reusable WebGenius template. Use it as the design foundation for "${websiteName}".`,
+      this.summarizeTemplateForPrompt(template),
+      'Generation rules for template use:',
+      '- Preserve the template layout rhythm, section order, component density, spacing quality, and interaction style unless the user asks otherwise.',
+      '- Replace all placeholder content with business-specific content from the user request.',
+      '- Adapt colors, images, copy, and calls to action to the user request.',
+      '- Do not mention that a template was used in the rendered website.',
+      `User customization request:\n${prompt}`,
+    ].join('\n\n');
   }
 
   async getV0Health() {
@@ -607,6 +698,8 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     websiteCode: any;
     v0ChatId?: string;
     v0DemoUrl?: string;
+    templateId?: string;
+    templateName?: string;
   }) {
     const { userId, websiteName, prompt, framework, responseContent, v0ChatId, v0DemoUrl } = args;
     const promptForHistory = args.displayPrompt?.trim() || prompt;
@@ -731,6 +824,8 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       websiteName,
       framework,
       prompt: promptForHistory,
+      templateId: args.templateId,
+      templateName: args.templateName,
       htmlCode: storeAsVite ? '' : htmlCode,
       cssCode: storeAsVite ? '' : cssCode,
       jsCode: storeAsVite ? '' : jsCode,
@@ -784,12 +879,15 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     framework?: string,
     attachments?: V0MessageAttachment[],
     displayPrompt?: string,
+    templateId?: string,
   ) {
     const resolvedFramework = this.normalizeFramework(framework);
     const creditCost = this.getCreditCost('generate', resolvedFramework, attachments);
     let usage: GenerationUsage | undefined;
     console.log('WebsiteService.generateWebsite - Starting:', { userId, websiteName, promptLength: prompt.length });
     try {
+      const template = await this.resolveTemplateForGeneration(templateId);
+      const promptForModel = this.buildPromptWithTemplate(prompt, websiteName, template);
       usage = await this.beginUsage({
         userId,
         kind: 'generate',
@@ -813,7 +911,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
 
       const systemPrompt = this.getV0WebsiteSystemPrompt(resolvedFramework);
 
-      const userPrompt = this.buildV0GenerationUserMessage(prompt, websiteName, resolvedFramework);
+      const userPrompt = this.buildV0GenerationUserMessage(promptForModel, websiteName, resolvedFramework);
       console.log('WebsiteService.generateWebsite - outbound v0 payload preview:', {
         framework: resolvedFramework,
         systemLength: systemPrompt.length,
@@ -844,13 +942,15 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       const saved = await this.persistWebsiteAfterV0Generation({
         userId,
         websiteName,
-        prompt,
+        prompt: promptForModel,
         displayPrompt: displayPrompt?.trim() || prompt,
         framework: resolvedFramework,
         responseContent,
         websiteCode,
         v0ChatId,
         v0DemoUrl,
+        templateId: template ? template.id.toString() : undefined,
+        templateName: template?.name,
       });
       await this.completeUsageSuccess(usage, userId, creditCost, {
         websiteId: saved.id,
@@ -980,6 +1080,8 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     websiteName: string,
     prompt: string,
     framework?: string,
+    templateId?: string,
+    templateName?: string,
   ) {
     const resolvedFramework = this.normalizeFramework(framework);
     let chat = await this.getV0ChatByIdRest(chatId);
@@ -1033,6 +1135,8 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       websiteCode,
       v0ChatId: resolvedChatId,
       v0DemoUrl,
+      templateId,
+      templateName,
     });
   }
 
@@ -1047,11 +1151,14 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     framework?: string,
     attachments?: V0MessageAttachment[],
     displayPrompt?: string,
+    templateId?: string,
   ): Promise<void> {
     const resolvedFramework = this.normalizeFramework(framework);
     const creditCost = this.getCreditCost('generate', resolvedFramework, attachments);
     let usage: GenerationUsage | undefined;
+    let template: WebsiteTemplate | null = null;
     try {
+      template = await this.resolveTemplateForGeneration(templateId);
       usage = await this.beginUsage({
         userId,
         kind: 'generate',
@@ -1067,7 +1174,8 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       return;
     }
     const systemPrompt = this.getV0WebsiteSystemPrompt(resolvedFramework);
-    const userMessage = this.buildV0GenerationUserMessage(prompt, websiteName, resolvedFramework);
+    const promptForModel = this.buildPromptWithTemplate(prompt, websiteName, template);
+    const userMessage = this.buildV0GenerationUserMessage(promptForModel, websiteName, resolvedFramework);
     console.log('WebsiteService.pipeV0GenerationStream - outbound v0 payload preview:', {
       framework: resolvedFramework,
       systemLength: systemPrompt.length,
@@ -1211,6 +1319,8 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
           websiteName,
           displayPrompt?.trim() || prompt,
           resolvedFramework,
+          template ? template.id.toString() : undefined,
+          template?.name,
         );
         await this.completeUsageSuccess(usage, userId, creditCost, {
           websiteId: saved.id,

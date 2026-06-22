@@ -1,8 +1,9 @@
 import { useRef, useState } from 'react';
-import { Send, Paperclip, Wand2, Sparkles, Mic, LayoutTemplate, FileText, Image, X } from 'lucide-react';
+import { Check, Eye, Send, Paperclip, Wand2, Sparkles, Mic, LayoutTemplate, FileText, Image, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useVoiceRecognition } from '@/lib/useVoiceRecognition';
 import { VoiceVisualizer } from '@/components/VoiceVisualizer';
+import WebsitePreview from '@/components/WebsitePreview';
 
 const suggestions = [
   'A modern SaaS landing page with clean light theme',
@@ -11,59 +12,65 @@ const suggestions = [
   'Portfolio website with animations',
 ];
 
-const templatePresets = [
-  {
-    name: 'SaaS Landing',
-    theme: 'from-sky-500 via-emerald-400 to-lime-300',
-    prompt:
-      'Create a polished SaaS landing page with a strong hero, product screenshots, feature sections, pricing cards, testimonials, FAQ, and a conversion-focused call to action. Make it responsive, modern, and trust-building.',
-  },
-  {
-    name: 'Portfolio',
-    theme: 'from-fuchsia-500 via-violet-500 to-cyan-300',
-    prompt:
-      'Create a personal portfolio website with a memorable hero, about section, selected projects, skills, experience timeline, testimonials, and contact section. Make it refined, responsive, and visually distinctive.',
-  },
-  {
-    name: 'Restaurant',
-    theme: 'from-amber-400 via-red-400 to-rose-500',
-    prompt:
-      'Create a restaurant website with an appetizing hero, menu highlights, chef or story section, opening hours, gallery, reservation call to action, location details, and contact section. Make it warm, elegant, and mobile friendly.',
-  },
-  {
-    name: 'E-commerce',
-    theme: 'from-emerald-400 via-teal-400 to-blue-500',
-    prompt:
-      'Create an e-commerce storefront with a product-focused hero, category tiles, featured products, reviews, benefits, newsletter signup, cart-style interactions, and a polished responsive layout.',
-  },
-  {
-    name: 'Agency',
-    theme: 'from-orange-400 via-pink-500 to-indigo-500',
-    prompt:
-      'Create a creative agency website with a bold hero, services, case studies, process section, client logos, testimonials, team section, and contact call to action. Make it premium and conversion-focused.',
-  },
-  {
-    name: 'Dashboard',
-    theme: 'from-green-400 via-emerald-500 to-slate-700',
-    prompt:
-      'Create a modern analytics dashboard with stat cards, charts, recent activity, project table, filters, sidebar navigation, and responsive layouts for desktop and mobile.',
-  },
-  {
-    name: 'Event Page',
-    theme: 'from-yellow-300 via-orange-400 to-purple-500',
-    prompt:
-      'Create an event landing page with a striking hero, date and venue details, speaker lineup, schedule, ticket tiers, sponsors, FAQ, and registration call to action. Make it energetic and responsive.',
-  },
-];
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
-function TemplatePreview({ theme, variant }: { theme: string; variant: string }) {
-  const isDashboard = variant === 'Dashboard';
-  const isEcommerce = variant === 'E-commerce';
-  const isPortfolio = variant === 'Portfolio';
+export interface WebsiteTemplate {
+  id: string;
+  name: string;
+  slug?: string;
+  description?: string;
+  category?: string;
+  tags?: string[];
+  framework?: 'next' | 'react' | 'html';
+  prompt?: string;
+  thumbnailUrl?: string;
+  htmlCode?: string;
+  cssCode?: string;
+  jsCode?: string;
+  components?: Array<{ name: string; type: string; path: string; code: string; language: string }>;
+  viteConfig?: {
+    packageJson?: string;
+    viteConfig?: string;
+    indexHtml?: string;
+    mainJs?: string;
+    mainJsx?: string;
+    styleCss?: string;
+  };
+  v0DemoUrl?: string;
+  reactArtifactUrl?: string;
+  reactBuildStatus?: 'queued' | 'building' | 'ready' | 'failed';
+  isFeatured?: boolean;
+  isPremium?: boolean;
+}
+
+function normalizePreviewUrl(url?: string) {
+  if (!url) return undefined;
+  if (url.startsWith('/preview-artifacts')) return `${API_URL}${url}`;
+  return url;
+}
+
+function TemplatePreview({ template }: { template: WebsiteTemplate }) {
+  const hostedUrl = normalizePreviewUrl(template.reactArtifactUrl || template.v0DemoUrl);
+  const theme = template.isFeatured
+    ? 'from-emerald-400 via-cyan-400 to-sky-500'
+    : 'from-zinc-700 via-emerald-500 to-teal-300';
 
   return (
     <div className="relative h-32 overflow-hidden rounded-xl border border-white/10 bg-zinc-950 shadow-inner">
-      <div className={`absolute inset-0 bg-gradient-to-br ${theme} opacity-75`} />
+      {template.thumbnailUrl ? (
+        <img src={template.thumbnailUrl} alt="" className="absolute inset-0 h-full w-full object-cover" />
+      ) : hostedUrl ? (
+        <iframe
+          src={hostedUrl}
+          title={`${template.name} thumbnail`}
+          className="absolute left-0 top-0 h-[400%] w-[400%] origin-top-left border-0 bg-white"
+          style={{ transform: 'scale(0.25)' }}
+          sandbox="allow-scripts allow-same-origin"
+          tabIndex={-1}
+        />
+      ) : (
+        <div className={`absolute inset-0 bg-gradient-to-br ${theme} opacity-75`} />
+      )}
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_25%_20%,rgba(255,255,255,0.55),transparent_24%),linear-gradient(to_bottom,rgba(0,0,0,0.1),rgba(0,0,0,0.62))]" />
       <div className="relative z-10 flex h-full flex-col p-3">
         <div className="mb-3 flex items-center justify-between">
@@ -75,41 +82,7 @@ function TemplatePreview({ theme, variant }: { theme: string; variant: string })
           </div>
         </div>
 
-        {isDashboard ? (
-          <div className="grid flex-1 grid-cols-[0.7fr_1fr] gap-2">
-            <div className="rounded-lg bg-black/35 p-2">
-              <div className="mb-2 h-2 w-10 rounded bg-white/45" />
-              <div className="space-y-1.5">
-                <div className="h-1.5 rounded bg-white/25" />
-                <div className="h-1.5 rounded bg-white/25" />
-                <div className="h-1.5 w-2/3 rounded bg-white/25" />
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <div className="rounded-lg bg-white/25" />
-              <div className="rounded-lg bg-white/20" />
-              <div className="col-span-2 rounded-lg bg-black/25" />
-            </div>
-          </div>
-        ) : isEcommerce ? (
-          <div className="grid flex-1 grid-cols-3 gap-2">
-            {[0, 1, 2].map((item) => (
-              <div key={item} className="rounded-lg bg-white/24 p-1.5">
-                <div className="mb-2 aspect-square rounded-md bg-black/25" />
-                <div className="h-1.5 rounded bg-white/50" />
-              </div>
-            ))}
-          </div>
-        ) : isPortfolio ? (
-          <div className="flex flex-1 items-end gap-3">
-            <div className="h-16 w-16 rounded-2xl bg-white/65" />
-            <div className="flex-1 space-y-2 pb-2">
-              <div className="h-3 w-4/5 rounded-full bg-white/85" />
-              <div className="h-2 w-3/5 rounded-full bg-white/45" />
-              <div className="h-7 w-20 rounded-full bg-black/35" />
-            </div>
-          </div>
-        ) : (
+        {!hostedUrl && !template.thumbnailUrl ? (
           <div className="flex flex-1 flex-col justify-end">
             <div className="mb-2 h-4 w-3/4 rounded-full bg-white/85" />
             <div className="mb-4 h-2 w-1/2 rounded-full bg-white/45" />
@@ -119,7 +92,7 @@ function TemplatePreview({ theme, variant }: { theme: string; variant: string })
               <div className="h-8 rounded-lg bg-white/25" />
             </div>
           </div>
-        )}
+        ) : null}
       </div>
     </div>
   );
@@ -134,6 +107,10 @@ interface PromptInputProps {
   attachments?: { id: string; name: string; type?: string; size: number; dataUrl?: string }[];
   onAttachFiles?: (files: FileList) => void;
   onRemoveAttachment?: (id: string) => void;
+  templates?: WebsiteTemplate[];
+  selectedTemplate?: WebsiteTemplate | null;
+  onSelectTemplate?: (template: WebsiteTemplate) => void;
+  onClearTemplate?: () => void;
   loading?: boolean;
   disabled?: boolean;
 }
@@ -147,11 +124,16 @@ export function PromptInput({
   attachments = [],
   onAttachFiles,
   onRemoveAttachment,
+  templates = [],
+  selectedTemplate,
+  onSelectTemplate,
+  onClearTemplate,
   loading = false,
   disabled = false,
 }: PromptInputProps) {
   const [isFocused, setIsFocused] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
+  const [previewTemplate, setPreviewTemplate] = useState<WebsiteTemplate | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canGenerate = prompt.trim().length > 0 || attachments.some((file) => !!file.dataUrl);
 
@@ -244,6 +226,22 @@ export function PromptInput({
               </div>
             </div>
           )}
+          {selectedTemplate ? (
+            <div className="px-3 pb-2">
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-400/20 bg-emerald-400/10 px-3 py-2 text-sm">
+                <span className="min-w-0 text-emerald-100">
+                  Using template: <span className="font-medium">{selectedTemplate.name}</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={onClearTemplate}
+                  className="rounded-lg px-2 py-1 text-xs text-emerald-100/70 transition hover:bg-emerald-400/10 hover:text-white"
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          ) : null}
         </div>
 
         {/* Bottom Actions */}
@@ -384,28 +382,103 @@ export function PromptInput({
             Choose a starting template
           </div>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {templatePresets.map((template) => (
-              <button
-                key={template.name}
-                type="button"
-                onClick={() => {
-                  setPrompt(template.prompt);
-                  setShowTemplates(false);
-                }}
-                className="group overflow-hidden rounded-2xl border border-border/60 bg-background/60 p-2 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-accent/60 hover:bg-accent/5 hover:shadow-xl hover:shadow-emerald-950/20 active:scale-[0.99]"
+            {templates.length === 0 ? (
+              <div className="col-span-full rounded-xl border border-dashed border-border/70 bg-background/40 p-5 text-center text-sm text-muted-foreground">
+                No published templates yet. Admins can publish generated websites as templates from the admin panel.
+              </div>
+            ) : templates.map((template) => (
+              <div
+                key={template.id}
+                className={cn(
+                  'group overflow-hidden rounded-2xl border bg-background/60 p-2 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-accent/60 hover:bg-accent/5 hover:shadow-xl hover:shadow-emerald-950/20',
+                  selectedTemplate?.id === template.id ? 'border-emerald-400/60 ring-1 ring-emerald-400/30' : 'border-border/60',
+                )}
               >
-                <TemplatePreview theme={template.theme} variant={template.name} />
+                <button type="button" onClick={() => setPreviewTemplate(template)} className="block w-full text-left">
+                  <TemplatePreview template={template} />
+                </button>
                 <span className="mt-2 flex items-center justify-between px-1">
-                  <span className="text-sm font-medium text-foreground">{template.name}</span>
-                  <span className="rounded-full bg-emerald-400/10 px-2 py-0.5 text-[10px] font-medium text-emerald-300 opacity-0 transition-opacity group-hover:opacity-100">
-                    Use
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium text-foreground">{template.name}</span>
+                    <span className="block truncate text-[11px] text-muted-foreground">{template.category || template.framework || 'Website'}</span>
+                  </span>
+                  <span className="flex gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setPreviewTemplate(template)}
+                      className="rounded-lg border border-border/60 p-1.5 text-muted-foreground transition hover:border-accent/50 hover:text-foreground"
+                      title="Preview template"
+                    >
+                      <Eye className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onSelectTemplate?.(template);
+                        if (template.framework) setFramework(template.framework);
+                        setShowTemplates(false);
+                      }}
+                      className="rounded-lg border border-emerald-400/25 bg-emerald-400/10 p-1.5 text-emerald-300 transition hover:bg-emerald-400/15"
+                      title="Use template"
+                    >
+                      <Check className="h-3.5 w-3.5" />
+                    </button>
                   </span>
                 </span>
-              </button>
+              </div>
             ))}
           </div>
         </div>
       )}
+
+      {previewTemplate ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="flex h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-4 py-3">
+              <div className="min-w-0">
+                <h2 className="truncate text-base font-semibold text-foreground">{previewTemplate.name}</h2>
+                <p className="truncate text-xs text-muted-foreground">{previewTemplate.description || previewTemplate.category || 'Template preview'}</p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSelectTemplate?.(previewTemplate);
+                    if (previewTemplate.framework) setFramework(previewTemplate.framework);
+                    setPreviewTemplate(null);
+                    setShowTemplates(false);
+                  }}
+                  className="inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-3 py-2 text-sm font-medium text-white transition hover:bg-emerald-400"
+                >
+                  <Check className="h-4 w-4" />
+                  Use Template
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPreviewTemplate(null)}
+                  className="rounded-lg px-3 py-2 text-sm text-muted-foreground transition hover:bg-secondary hover:text-foreground"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+            <div className="min-h-0 flex-1 bg-background p-3">
+              <WebsitePreview
+                html={previewTemplate.htmlCode}
+                css={previewTemplate.cssCode}
+                js={previewTemplate.jsCode}
+                components={previewTemplate.components}
+                viteConfig={previewTemplate.viteConfig}
+                websiteName={previewTemplate.name}
+                prompt={previewTemplate.prompt || previewTemplate.description}
+                v0DemoUrl={previewTemplate.v0DemoUrl}
+                artifactUrl={previewTemplate.reactArtifactUrl}
+                className="h-full"
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* Suggestions */}
       {!loading && !disabled && (

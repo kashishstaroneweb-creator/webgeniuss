@@ -1,33 +1,46 @@
-import { Entity, Column, ObjectIdColumn, CreateDateColumn, ManyToOne, JoinColumn } from 'typeorm';
+import { Column, CreateDateColumn, Entity, ObjectIdColumn, UpdateDateColumn } from 'typeorm';
 import { ObjectId } from 'mongodb';
-import { User } from './user.entity';
 
-@Entity('websites')
-export class Website {
+export type WebsiteTemplateStatus = 'draft' | 'published' | 'archived';
+export type WebsiteTemplateFramework = 'next' | 'react' | 'html';
+
+@Entity('website_templates')
+export class WebsiteTemplate {
   @ObjectIdColumn()
   id: ObjectId;
 
   @Column()
-  userId: string;
-
-  @ManyToOne(() => User)
-  @JoinColumn({ name: 'userId' })
-  user: User;
+  name: string;
 
   @Column()
-  websiteName: string;
+  slug: string;
 
   @Column({ nullable: true })
-  framework?: 'next' | 'react' | 'html';
+  description?: string;
+
+  @Column({ nullable: true })
+  category?: string;
+
+  @Column({ type: 'json', nullable: true })
+  tags?: string[];
+
+  @Column({ nullable: true })
+  framework?: WebsiteTemplateFramework;
+
+  @Column({ nullable: true })
+  thumbnailUrl?: string;
+
+  @Column({ nullable: true })
+  sourceWebsiteId?: string;
+
+  @Column({ nullable: true })
+  createdByAdminId?: string;
 
   @Column({ type: 'text', nullable: true })
   prompt?: string;
 
-  @Column({ nullable: true })
-  templateId?: string;
-
-  @Column({ nullable: true })
-  templateName?: string;
+  @Column({ type: 'text', nullable: true })
+  basePrompt?: string;
 
   @Column('text')
   htmlCode: string;
@@ -58,17 +71,11 @@ export class Website {
   };
 
   @Column({ nullable: true })
-  generatedPath?: string;
-
-  /** v0 Platform API chat id (source of truth for hosted demo). */
-  @Column({ nullable: true })
-  v0ChatId?: string;
-
-  /** Hosted preview URL from v0 (`demo` / `latestVersion.demoUrl`), same pattern as v0-clone. */
-  @Column({ nullable: true })
   v0DemoUrl?: string;
 
-  /** React-only build pipeline status for artifact previews. */
+  @Column({ nullable: true })
+  reactArtifactUrl?: string;
+
   @Column({ nullable: true })
   reactBuildStatus?: 'queued' | 'building' | 'ready' | 'failed';
 
@@ -76,18 +83,23 @@ export class Website {
   reactBuildLog?: string;
 
   @Column({ nullable: true })
-  reactBuildId?: string;
+  status?: WebsiteTemplateStatus;
 
   @Column({ nullable: true })
-  reactArtifactUrl?: string;
+  isFeatured?: boolean;
 
   @Column({ nullable: true })
-  reactBuildStartedAt?: Date;
+  isPremium?: boolean;
 
   @Column({ nullable: true })
-  reactBuildFinishedAt?: Date;
+  sortOrder?: number;
+
+  @Column({ nullable: true })
+  publishedAt?: Date;
 
   @CreateDateColumn()
   createdAt: Date;
-}
 
+  @UpdateDateColumn()
+  updatedAt: Date;
+}

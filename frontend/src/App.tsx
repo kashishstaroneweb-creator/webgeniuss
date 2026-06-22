@@ -2,9 +2,9 @@ import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useSearchParams } from 'react-router-dom';
 import { useAuthStore } from '@/store/authStore';
 import { AppSidebar } from '@/components/AppSidebar';
+import { AdminSidebar } from '@/components/AdminSidebar';
 import { AppHeader } from '@/components/AppHeader';
 import { AuroraBackground } from '@/components/AuroraBackground';
-import Button from '@/components/ui/Button';
 import Login from '@/pages/Login';
 import ForgotPassword from '@/pages/ForgotPassword';
 import Dashboard from '@/pages/Dashboard';
@@ -87,30 +87,17 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
 };
 
 const AdminLayout = ({ children }: { children: React.ReactNode }) => {
-  const { user, logout } = useAuthStore();
-
   return (
     <>
       <AuroraBackground />
-      <div className="relative z-10 flex h-screen flex-col bg-transparent p-4 text-foreground">
-        <header className="mb-4 flex h-16 shrink-0 items-center justify-between rounded-3xl border border-border/50 bg-white/70 px-6 backdrop-blur-xl dark:bg-black/40">
-          <div>
-            <p className="text-xs font-medium uppercase tracking-wide text-emerald-300">Admin Analytics</p>
-            <h1 className="text-lg font-semibold">WebGenius Command Center</h1>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="hidden text-right sm:block">
-              <p className="text-sm font-medium">{user?.name || 'Admin'}</p>
-              <p className="text-xs text-muted-foreground">{user?.email}</p>
-            </div>
-            <Button variant="outline" size="sm" onClick={logout}>
-              Logout
-            </Button>
-          </div>
-        </header>
-        <main className="flex-1 overflow-y-auto rounded-3xl border border-border/50 bg-white/70 backdrop-blur-xl dark:bg-black/40">
-          {children}
-        </main>
+      <div className="flex h-screen bg-transparent relative z-10 text-foreground p-4 gap-4">
+        <AdminSidebar />
+        <div className="flex flex-1 flex-col overflow-hidden gap-4">
+          <AppHeader />
+          <main className="flex-1 overflow-y-auto rounded-3xl relative scrollbar-hide border border-border/50 bg-white/70 dark:bg-black/40 backdrop-blur-xl">
+            {children}
+          </main>
+        </div>
       </div>
     </>
   );

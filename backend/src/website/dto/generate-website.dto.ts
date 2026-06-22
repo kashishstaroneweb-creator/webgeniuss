@@ -33,5 +33,9 @@ export class GenerateWebsiteDto {
   @Type(() => V0AttachmentDto)
   @IsOptional()
   attachments?: V0AttachmentDto[];
+
+  @IsString()
+  @IsOptional()
+  templateId?: string;
 }
 

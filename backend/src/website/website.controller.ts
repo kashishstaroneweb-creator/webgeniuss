@@ -33,6 +33,7 @@ export class WebsiteController {
         generateDto.framework,
         generateDto.attachments,
         generateDto.displayPrompt,
+        generateDto.templateId,
       );
       console.log('WebsiteController.generate - Success, website ID:', result.id);
       return result;
@@ -70,6 +71,7 @@ export class WebsiteController {
         generateDto.framework,
         generateDto.attachments,
         generateDto.displayPrompt,
+        generateDto.templateId,
       );
     } catch (error: any) {
       if (!res.headersSent) {

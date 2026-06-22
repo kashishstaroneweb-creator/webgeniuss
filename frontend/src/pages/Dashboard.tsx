@@ -9,7 +9,7 @@ import { Sparkles, Send, Eye, Code, Monitor, Download, Paperclip, Wand2, Mic, Ro
 import { cn } from '@/lib/utils';
 import WebsitePreview from '@/components/WebsitePreview';
 import { GeneratingLoader } from '@/components/GeneratingLoader';
-import { PromptInput } from '@/components/PromptInput';
+import { PromptInput, type WebsiteTemplate } from '@/components/PromptInput';
 import { StatsCards } from '@/components/StatsCards';
 import { RecentProjects } from '@/components/RecentProjects';
 import { VoiceVisualizer } from '@/components/VoiceVisualizer';
@@ -118,6 +118,8 @@ interface GeneratedWebsite {
   reactArtifactUrl?: string;
   reactBuildStatus?: 'queued' | 'building' | 'ready' | 'failed';
   reactBuildLog?: string;
+  templateId?: string;
+  templateName?: string;
   /** Last sync edit: v0-clone thread continuation vs legacy full-site create. */
   editV0Path?: 'sendMessage' | 'create_fallback';
   createdAt: string;
@@ -151,6 +153,8 @@ const Dashboard = () => {
   const [rebuildLoading, setRebuildLoading] = useState(false);
   const [promptAttachments, setPromptAttachments] = useState<PromptAttachment[]>([]);
   const [editAttachments, setEditAttachments] = useState<PromptAttachment[]>([]);
+  const [templates, setTemplates] = useState<WebsiteTemplate[]>([]);
+  const [selectedTemplate, setSelectedTemplate] = useState<WebsiteTemplate | null>(null);
   const editFileInputRef = useRef<HTMLInputElement>(null);
 
   const voice = useVoiceSynthesis();
@@ -292,6 +296,22 @@ const Dashboard = () => {
     if (generatedWebsite) setGenerationStep('done');
   }, [generatedWebsite]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const loadTemplates = async () => {
+      try {
+        const res = await api.get('/templates');
+        if (!cancelled) setTemplates(Array.isArray(res.data) ? res.data : []);
+      } catch (err) {
+        if (!cancelled) console.error('Failed to load templates:', err);
+      }
+    };
+    void loadTemplates();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Leaving ?website= (e.g. sidebar "New project") must clear deep-linked state — URL and UI stay in sync
   useEffect(() => {
     const prev = prevWebsiteIdFromUrlRef.current;
@@ -339,6 +359,8 @@ const Dashboard = () => {
           reactArtifactUrl: data.reactArtifactUrl,
           reactBuildStatus: data.reactBuildStatus,
           reactBuildLog: data.reactBuildLog,
+          templateId: data.templateId,
+          templateName: data.templateName,
           createdAt: data.createdAt,
         });
         setPrompt(data.prompt || '');
@@ -540,6 +562,7 @@ const Dashboard = () => {
           websiteName: websiteNameFinal,
           framework,
           attachments: imageAttachments,
+          templateId: selectedTemplate?.id,
           ...(currentUserId && { userId: currentUserId }),
         }),
       });
@@ -898,6 +921,15 @@ const Dashboard = () => {
                   setPromptAttachments((current) => current.filter((file) => file.id !== id))
                 }
                 loading={loading}
+                templates={templates}
+                selectedTemplate={selectedTemplate}
+                onSelectTemplate={(template) => {
+                  setSelectedTemplate(template);
+                  if (!prompt.trim()) {
+                    setPrompt(`Customize this ${template.name} template for my business.`);
+                  }
+                }}
+                onClearTemplate={() => setSelectedTemplate(null)}
               />
             </div>
 

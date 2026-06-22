@@ -7,11 +7,12 @@ import { GenerationUsage } from '../entities/generation-usage.entity';
 import { Role } from '../entities/role.entity';
 import { User } from '../entities/user.entity';
 import { Website } from '../entities/website.entity';
+import { WebsiteTemplate } from '../entities/website-template.entity';
 import { UserModule } from '../user/user.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([User, Role, Website, CreditLedger, GenerationUsage]),
+    TypeOrmModule.forFeature([User, Role, Website, WebsiteTemplate, CreditLedger, GenerationUsage]),
     UserModule,
   ],
   controllers: [AdminController],

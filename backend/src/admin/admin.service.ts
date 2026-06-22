@@ -8,7 +8,10 @@ import { GenerationUsage } from '../entities/generation-usage.entity';
 import { Role, RoleName } from '../entities/role.entity';
 import { OAuthProvider, SubscriptionPlanType, User } from '../entities/user.entity';
 import { Website } from '../entities/website.entity';
+import { WebsiteTemplate } from '../entities/website-template.entity';
 import { AdjustCreditsDto } from './dto/adjust-credits.dto';
+import { CreateTemplateFromWebsiteDto } from './dto/create-template-from-website.dto';
+import { UpdateTemplateDto } from './dto/update-template.dto';
 
 @Injectable()
 export class AdminService implements OnModuleInit {
@@ -19,6 +22,8 @@ export class AdminService implements OnModuleInit {
     private roleRepository: Repository<Role>,
     @InjectRepository(Website)
     private websiteRepository: Repository<Website>,
+    @InjectRepository(WebsiteTemplate)
+    private templateRepository: Repository<WebsiteTemplate>,
     @InjectRepository(CreditLedger)
     private creditLedgerRepository: Repository<CreditLedger>,
     @InjectRepository(GenerationUsage)
@@ -143,6 +148,22 @@ export class AdminService implements OnModuleInit {
     };
   }
 
+  private slugify(value: string) {
+    return (value || 'template')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 80) || `template-${Date.now()}`;
+  }
+
+  private serializeTemplate(template: WebsiteTemplate) {
+    return {
+      ...template,
+      id: this.objectIdString(template),
+    };
+  }
+
   async getDashboard() {
     const [users, websites, generations, ledger] = await Promise.all([
       this.userRepository.find(),
@@ -264,5 +285,76 @@ export class AdminService implements OnModuleInit {
       }),
     );
     return { user: this.sanitizeUser(saved, await this.roleNameFor(saved.roleId)), ledger };
+  }
+
+  async listTemplates() {
+    const rows = await this.templateRepository.find({ order: { sortOrder: 'ASC', createdAt: 'DESC' } as any });
+    return rows.map((template) => this.serializeTemplate(template));
+  }
+
+  async createTemplateFromWebsite(websiteId: string, dto: CreateTemplateFromWebsiteDto, adminUserId: string) {
+    const website = await this.websiteRepository.findOne({ where: { _id: new ObjectId(websiteId) } as any });
+    if (!website) {
+      throw new Error('Website not found');
+    }
+
+    const status = dto.status || 'draft';
+    const template = this.templateRepository.create({
+      name: dto.name || website.websiteName || `Template ${Date.now()}`,
+      slug: this.slugify(dto.slug || dto.name || website.websiteName || `template-${Date.now()}`),
+      description: dto.description,
+      category: dto.category || website.framework || 'Website',
+      tags: Array.isArray(dto.tags) ? dto.tags : [],
+      framework: website.framework || 'react',
+      thumbnailUrl: dto.thumbnailUrl,
+      sourceWebsiteId: website.id.toString(),
+      createdByAdminId: adminUserId,
+      prompt: website.prompt,
+      basePrompt: dto.basePrompt || website.prompt,
+      htmlCode: website.htmlCode || '',
+      cssCode: website.cssCode || '',
+      jsCode: website.jsCode || '',
+      components: website.components,
+      viteConfig: website.viteConfig,
+      v0DemoUrl: website.v0DemoUrl,
+      reactArtifactUrl: website.reactArtifactUrl,
+      reactBuildStatus: website.reactBuildStatus,
+      reactBuildLog: website.reactBuildLog,
+      status,
+      isFeatured: !!dto.isFeatured,
+      isPremium: !!dto.isPremium,
+      sortOrder: Number(dto.sortOrder || 0),
+      publishedAt: status === 'published' ? new Date() : undefined,
+    });
+
+    const saved = await this.templateRepository.save(template);
+    return this.serializeTemplate(saved);
+  }
+
+  async updateTemplate(id: string, dto: UpdateTemplateDto) {
+    const template = await this.templateRepository.findOne({ where: { _id: new ObjectId(id) } as any });
+    if (!template) {
+      throw new Error('Template not found');
+    }
+    const nextStatus = dto.status || template.status || 'draft';
+    Object.assign(template, {
+      ...dto,
+      slug: dto.slug ? this.slugify(dto.slug) : template.slug,
+      tags: Array.isArray(dto.tags) ? dto.tags : template.tags,
+      sortOrder: dto.sortOrder !== undefined ? Number(dto.sortOrder) : template.sortOrder,
+      status: nextStatus,
+      publishedAt: nextStatus === 'published' && !template.publishedAt ? new Date() : template.publishedAt,
+    });
+    const saved = await this.templateRepository.save(template);
+    return this.serializeTemplate(saved);
+  }
+
+  async deleteTemplate(id: string) {
+    const template = await this.templateRepository.findOne({ where: { _id: new ObjectId(id) } as any });
+    if (!template) {
+      throw new Error('Template not found');
+    }
+    await this.templateRepository.delete({ _id: new ObjectId(id) } as any);
+    return { success: true };
   }
 }
