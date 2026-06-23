@@ -1,11 +1,53 @@
+import { useEffect, useState } from 'react';
 import { Bell, Search, Command } from 'lucide-react';
 import Button from '@/components/ui/Button';
 import ThemeToggle from '@/components/ThemeToggle';
 import { useAuthStore } from '@/store/authStore';
+import api from '@/lib/api';
 
-export function AppHeader() {
+interface AppHeaderProps {
+  creditMode?: 'user' | 'v0';
+}
+
+export function AppHeader({ creditMode = 'user' }: AppHeaderProps) {
   const { user } = useAuthStore();
   const creditsBalance = Number(user?.creditsBalance ?? 0);
+  const [v0CreditsBalance, setV0CreditsBalance] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (creditMode !== 'v0') return;
+
+    let cancelled = false;
+    const loadV0Credits = async () => {
+      try {
+        const res = await api.get('/admin/v0-account');
+        if (!cancelled) {
+          const remaining = res.data?.plan?.balance?.remaining;
+          setV0CreditsBalance(typeof remaining === 'number' ? remaining : null);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setV0CreditsBalance(null);
+          console.error('Failed to load v0 credits for header:', error);
+        }
+      }
+    };
+
+    void loadV0Credits();
+    const timer = window.setInterval(loadV0Credits, 30000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [creditMode]);
+
+  const displayedCredits =
+    creditMode === 'v0'
+      ? v0CreditsBalance === null
+        ? '-'
+        : v0CreditsBalance.toLocaleString()
+      : creditsBalance.toLocaleString();
+  const creditLabel = creditMode === 'v0' ? 'v0 Credits' : 'Credits';
 
   return (
     <header className="flex h-16 items-center justify-between border border-border/50 glass-panel px-6 rounded-3xl shrink-0">
@@ -42,7 +84,7 @@ export function AppHeader() {
           className="gap-2 border-border bg-transparent transition-all duration-200"
         >
           <span className="h-2 w-2 rounded-full bg-accent" />
-          <span>{creditsBalance} Credits</span>
+          <span>{displayedCredits} {creditLabel}</span>
         </Button>
         <ThemeToggle />
       </div>

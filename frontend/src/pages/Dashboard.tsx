@@ -131,7 +131,7 @@ const Dashboard = () => {
   const websiteIdFromUrl = searchParams.get('website');
   const prevWebsiteIdFromUrlRef = useRef<string | null>(null);
   const generatedWebsiteRef = useRef<GeneratedWebsite | null>(null);
-  const { user } = useAuthStore();
+  const { user, updateUser } = useAuthStore();
   const { setCollapsed } = useSidebarStore();
   const [prompt, setPrompt] = useState('');
   const [loading, setLoading] = useState(false);
@@ -143,7 +143,12 @@ const Dashboard = () => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [activeTab, setActiveTab] = useState<string>('component-0');
   const [activeComponentIndex, setActiveComponentIndex] = useState(0);
-  const [stats, setStats] = useState({ totalProjects: 0, generations: 0, creditsUsed: 0, creditsRemaining: 5 });
+  const [stats, setStats] = useState(() => ({
+    totalProjects: 0,
+    generations: 0,
+    creditsUsed: Number(user?.creditsUsed ?? 0),
+    creditsRemaining: Number(user?.creditsBalance ?? 0),
+  }));
   const [loadingHistoryWebsite, setLoadingHistoryWebsite] = useState(false);
   /** Steps for left-panel processing status: thinking → generating files → done */
   const [generationStep, setGenerationStep] = useState<'thinking' | 'generating' | 'done'>('thinking');
@@ -183,6 +188,20 @@ const Dashboard = () => {
   };
 
   const showSplitView = isGenerating || loadingHistoryWebsite || generatedWebsite !== null;
+
+  const refreshCurrentUser = async () => {
+    try {
+      const res = await api.get('/user/profile');
+      updateUser({
+        creditsBalance: Number(res.data?.creditsBalance ?? 0),
+        creditsUsed: Number(res.data?.creditsUsed ?? 0),
+        subscriptionPlan: res.data?.subscriptionPlan,
+        accountStatus: res.data?.accountStatus,
+      });
+    } catch (error) {
+      console.error('Failed to refresh user credits:', error);
+    }
+  };
 
   /** Chat messages derived from prompt (original + [Edit] lines) for v0-style chat UI */
   const chatMessages = useMemo(() => {
@@ -385,18 +404,26 @@ const Dashboard = () => {
       try {
         const response = await api.get('/website/list');
         const websites = response.data || [];
-        setStats({
+        setStats((current) => ({
           totalProjects: websites.length,
           generations: websites.length,
-          creditsUsed: websites.length,
-          creditsRemaining: 5 - websites.length,
-        });
+          creditsUsed: current.creditsUsed,
+          creditsRemaining: current.creditsRemaining,
+        }));
       } catch (error) {
         console.error('Failed to fetch stats:', error);
       }
     };
     fetchStats();
   }, [generatedWebsite]);
+
+  useEffect(() => {
+    setStats((current) => ({
+      ...current,
+      creditsUsed: Number(user?.creditsUsed ?? 0),
+      creditsRemaining: Number(user?.creditsBalance ?? 0),
+    }));
+  }, [user?.creditsBalance, user?.creditsUsed]);
 
   // Artifact preview pipeline polling: React builds async; HTML publishes quickly but can still report status.
   useEffect(() => {
@@ -645,6 +672,7 @@ const Dashboard = () => {
       setPromptAttachments([]);
       setFramework(inferFrameworkFromWebsite(saved));
       if (saved.id) syncWebsiteIdToUrl(saved.id);
+      void refreshCurrentUser();
       // Keep prompt and websiteName visible on the left for "generate again"
       // Automatically collapse sidebar when website is generated
       setCollapsed(true);
@@ -708,6 +736,7 @@ const Dashboard = () => {
       setAddOnPrompt('');
       setEditAttachments([]);
       if (nextId) syncWebsiteIdToUrl(nextId);
+      void refreshCurrentUser();
     };
 
     voice.speak("Got it, applying your changes.");

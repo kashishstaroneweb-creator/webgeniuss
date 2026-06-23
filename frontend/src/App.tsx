@@ -93,7 +93,7 @@ const AdminLayout = ({ children }: { children: React.ReactNode }) => {
       <div className="flex h-screen bg-transparent relative z-10 text-foreground p-4 gap-4">
         <AdminSidebar />
         <div className="flex flex-1 flex-col overflow-hidden gap-4">
-          <AppHeader />
+          <AppHeader creditMode="v0" />
           <main className="flex-1 overflow-y-auto rounded-3xl relative scrollbar-hide border border-border/50 bg-white/70 dark:bg-black/40 backdrop-blur-xl">
             {children}
           </main>

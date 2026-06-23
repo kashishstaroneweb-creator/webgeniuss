@@ -97,6 +97,33 @@ interface CreditLedgerRow {
   createdAt?: string;
 }
 
+interface V0Account {
+  ok: boolean;
+  statusCode?: number;
+  baseUrl?: string;
+  keyConfigured: boolean;
+  keyPreview?: string | null;
+  user?: {
+    id?: string;
+    email?: string;
+  };
+  plan?: {
+    plan?: string;
+    billingCycle?: {
+      start?: number;
+      end?: number;
+    };
+    balance?: {
+      remaining?: number;
+      total?: number;
+    };
+    [key: string]: unknown;
+  };
+  checkedAt?: string;
+  error?: string;
+  message?: string;
+}
+
 type WebsiteFramework = 'next' | 'react' | 'html';
 
 interface PreviewableWebsite {
@@ -195,6 +222,40 @@ const formatDate = (value?: string) => {
   return new Date(value).toLocaleString();
 };
 
+const formatUnixDate = (value?: number) => {
+  if (!value) return '-';
+  const ms = value < 1000000000000 ? value * 1000 : value;
+  return new Date(ms).toLocaleDateString();
+};
+
+const formatNumber = (value?: number) => {
+  if (typeof value !== 'number' || Number.isNaN(value)) return '-';
+  return value.toLocaleString();
+};
+
+const adminTabCopy: Record<AdminTab, { title: string; description: string }> = {
+  overview: {
+    title: 'Admin Overview',
+    description: 'Monitor users, generations, credits, and v0-linked operational health.',
+  },
+  users: {
+    title: 'User Management',
+    description: 'Review accounts, internal credit balances, roles, and account status.',
+  },
+  generations: {
+    title: 'Generation Logs',
+    description: 'Inspect generation and edit runs, costs, status, timing, and v0 chat references.',
+  },
+  ledger: {
+    title: 'Credit Ledger',
+    description: 'Audit internal credit grants, deductions, adjustments, and resulting balances.',
+  },
+  templates: {
+    title: 'Template Library',
+    description: 'Create, refine, publish, and archive reusable website templates.',
+  },
+};
+
 export default function AdminPanel() {
   const [searchParams] = useSearchParams();
   const requestedTab = searchParams.get('tab');
@@ -210,6 +271,7 @@ export default function AdminPanel() {
   const [generations, setGenerations] = useState<GenerationUsage[]>([]);
   const [ledger, setLedger] = useState<CreditLedgerRow[]>([]);
   const [templates, setTemplates] = useState<WebsiteTemplate[]>([]);
+  const [v0Account, setV0Account] = useState<V0Account | null>(null);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
   const [adjustingUser, setAdjustingUser] = useState<string | null>(null);
@@ -235,28 +297,45 @@ export default function AdminPanel() {
     sortOrder: 0,
   });
 
-  const loadAdminData = async () => {
-    setLoading(true);
+  const loadAdminData = async (showLoading = true) => {
+    if (showLoading) setLoading(true);
     try {
-      const [dashboardRes, usersRes, generationsRes, ledgerRes, templatesRes] = await Promise.all([
+      const [dashboardRes, usersRes, generationsRes, ledgerRes, templatesRes, v0AccountRes] = await Promise.all([
         api.get('/admin/dashboard'),
         api.get('/admin/users'),
         api.get('/admin/generations'),
         api.get('/admin/ledger'),
         api.get('/admin/templates'),
+        api.get('/admin/v0-account').catch((error) => ({
+          data: {
+            ok: false,
+            statusCode: error.response?.status,
+            keyConfigured: false,
+            message: error.response?.data?.message || 'Failed to load v0 account',
+            error: error.response?.data?.error || error.message,
+          },
+        })),
       ]);
       setDashboard(dashboardRes.data);
       setUsers(Array.isArray(usersRes.data) ? usersRes.data : []);
       setGenerations(Array.isArray(generationsRes.data) ? generationsRes.data : []);
       setLedger(Array.isArray(ledgerRes.data) ? ledgerRes.data : []);
       setTemplates(Array.isArray(templatesRes.data) ? templatesRes.data : []);
+      setV0Account(v0AccountRes.data);
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   };
 
   useEffect(() => {
     void loadAdminData();
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void loadAdminData(false);
+    }, 30000);
+    return () => window.clearInterval(timer);
   }, []);
 
   const filteredUsers = useMemo(() => {
@@ -372,22 +451,22 @@ export default function AdminPanel() {
 
   return (
     <div className="min-h-full p-4 sm:p-6 lg:p-8">
-      <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+      <header className="mb-6 flex flex-col gap-4 border-b border-border/60 pb-5 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-emerald-400/25 bg-emerald-400/10 px-3 py-1 text-xs font-medium text-emerald-300">
+          <div className="mb-2 inline-flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-emerald-300">
             <ShieldCheck className="h-3.5 w-3.5" />
-            WebGenius Command Center
+            Admin
           </div>
-          <h1 className="text-3xl font-semibold tracking-tight text-foreground">Admin Panel</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Monitor users, generations, credits, and v0-linked operational health.
-          </p>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">{adminTabCopy[activeTab].title}</h1>
+          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">{adminTabCopy[activeTab].description}</p>
         </div>
-        <Button variant="outline" onClick={loadAdminData} disabled={loading} className="gap-2">
-          <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
-          Refresh
-        </Button>
-      </div>
+        {activeTab === 'overview' ? (
+          <Button variant="outline" onClick={() => loadAdminData()} disabled={loading} className="gap-2">
+            <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
+            Refresh
+          </Button>
+        ) : null}
+      </header>
 
       <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-end">
         {activeTab !== 'overview' ? (
@@ -405,6 +484,49 @@ export default function AdminPanel() {
 
       {activeTab === 'overview' && dashboard ? (
         <div className="space-y-6">
+          <Card className="rounded-2xl">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Coins className="h-4 w-4 text-emerald-300" />
+                v0 Account Credits
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="grid gap-4 lg:grid-cols-[1fr_1fr_1.2fr]">
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Remaining</p>
+                <p className="mt-2 text-3xl font-semibold text-foreground">
+                  {formatNumber(v0Account?.plan?.balance?.remaining)}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  of {formatNumber(v0Account?.plan?.balance?.total)} shared v0 credits
+                </p>
+              </div>
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Plan</p>
+                <p className="mt-2 text-2xl font-semibold capitalize text-foreground">
+                  {v0Account?.plan?.plan || '-'}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Cycle {formatUnixDate(v0Account?.plan?.billingCycle?.start)} - {formatUnixDate(v0Account?.plan?.billingCycle?.end)}
+                </p>
+              </div>
+              <div className="min-w-0 rounded-xl border border-border/60 bg-background/40 p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <StatusBadge status={v0Account?.ok ? 'active' : 'failed'} />
+                  <span className="text-xs text-muted-foreground">
+                    API key {v0Account?.keyConfigured ? v0Account.keyPreview || 'configured' : 'missing'}
+                  </span>
+                </div>
+                <p className="mt-2 truncate text-sm text-foreground">{v0Account?.user?.email || 'No v0 account loaded'}</p>
+                <p className="mt-1 truncate text-xs text-muted-foreground">
+                  {v0Account?.ok
+                    ? `Checked ${formatDate(v0Account.checkedAt)}`
+                    : v0Account?.message || v0Account?.error || 'Unable to fetch v0 account'}
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <StatCard label="Users" value={dashboard.totals.users} detail={`${dashboard.totals.activeUsers} active`} icon={Users} />
             <StatCard label="Generations" value={dashboard.totals.generations} detail={`${dashboard.totals.successRate}% success rate`} icon={Activity} />

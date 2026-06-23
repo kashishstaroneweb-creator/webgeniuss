@@ -12,6 +12,7 @@ import { WebsiteTemplate } from '../entities/website-template.entity';
 import { AdjustCreditsDto } from './dto/adjust-credits.dto';
 import { CreateTemplateFromWebsiteDto } from './dto/create-template-from-website.dto';
 import { UpdateTemplateDto } from './dto/update-template.dto';
+import { WebsiteService } from '../website/website.service';
 
 @Injectable()
 export class AdminService implements OnModuleInit {
@@ -28,6 +29,7 @@ export class AdminService implements OnModuleInit {
     private creditLedgerRepository: Repository<CreditLedger>,
     @InjectRepository(GenerationUsage)
     private generationUsageRepository: Repository<GenerationUsage>,
+    private websiteService: WebsiteService,
   ) {}
 
   async onModuleInit() {
@@ -47,9 +49,30 @@ export class AdminService implements OnModuleInit {
     return role;
   }
 
+  private async getV0CreditsBalance(): Promise<number | null> {
+    try {
+      const result = await this.websiteService.getV0Health();
+      const remaining = (result as any)?.plan?.balance?.remaining;
+      return typeof remaining === 'number' && Number.isFinite(remaining) ? remaining : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async removeLegacySuperAdminCreditSeeds(superAdminUserId?: string) {
+    const where: any = {
+      type: 'subscription_grant',
+      createdBy: 'system',
+      reason: /super\s*admin/i,
+    };
+    if (superAdminUserId) where.userId = superAdminUserId;
+    await (this.creditLedgerRepository as any).deleteMany(where);
+  }
+
   async seedSuperAdmin() {
     const superAdminEmail = process.env.SUPER_ADMIN_EMAIL || 'admin@webgenius.local';
     const superAdminPassword = process.env.SUPER_ADMIN_PASSWORD || 'Admin@12345';
+    const v0CreditsBalance = await this.getV0CreditsBalance();
 
     const userRole = await this.getOrCreateRole(RoleName.USER, ['read:own', 'write:own']);
     await this.getOrCreateRole(RoleName.ADMIN, [
@@ -92,9 +115,10 @@ export class AdminService implements OnModuleInit {
       existing.roleId = this.objectIdString(superAdminRole);
       existing.isOtpVerified = true;
       existing.accountStatus = existing.accountStatus || 'active';
-      existing.creditsBalance = Number(existing.creditsBalance ?? 100000);
+      existing.creditsBalance = v0CreditsBalance ?? 0;
       existing.creditsUsed = Number(existing.creditsUsed ?? 0);
-      await this.userRepository.save(existing);
+      const saved = await this.userRepository.save(existing);
+      await this.removeLegacySuperAdminCreditSeeds(this.objectIdString(saved));
       return;
     }
 
@@ -107,23 +131,13 @@ export class AdminService implements OnModuleInit {
       subscriptionPlan: SubscriptionPlanType.ENTERPRISE,
       isOtpVerified: true,
       roleId: this.objectIdString(superAdminRole || userRole),
-      creditsBalance: Number(process.env.SUPER_ADMIN_INITIAL_CREDITS) || 100000,
+      creditsBalance: v0CreditsBalance ?? 0,
       creditsUsed: 0,
       accountStatus: 'active',
       themePreference: 'dark',
     });
     const saved = await this.userRepository.save(admin);
-    await this.creditLedgerRepository.save(
-      this.creditLedgerRepository.create({
-        userId: this.objectIdString(saved),
-        type: 'subscription_grant',
-        amount: saved.creditsBalance,
-        balanceBefore: 0,
-        balanceAfter: saved.creditsBalance,
-        reason: 'Initial super admin credits seeded',
-        createdBy: 'system',
-      }),
-    );
+    await this.removeLegacySuperAdminCreditSeeds(this.objectIdString(saved));
   }
 
   private async roleNameFor(roleId?: string) {
@@ -179,13 +193,21 @@ export class AdminService implements OnModuleInit {
     todayStart.setHours(0, 0, 0, 0);
     const todayGenerations = generations.filter((item) => new Date(item.startedAt || item.updatedAt).getTime() >= todayStart.getTime());
     const creditsConsumed = success.reduce((sum, item) => sum + Number(item.actualCostCredits || 0), 0);
-    const creditsGranted = ledger
+    const billableLedger = ledger.filter(
+      (item) =>
+        !(
+          item.createdBy === 'system' &&
+          item.type === 'subscription_grant' &&
+          /super\s*admin/i.test(item.reason || '')
+        ),
+    );
+    const creditsGranted = billableLedger
       .filter((item) => item.amount > 0)
       .reduce((sum, item) => sum + Number(item.amount || 0), 0);
-    const adminAdjustments = ledger
+    const adminAdjustments = billableLedger
       .filter((item) => item.type === 'admin_adjustment')
       .reduce((sum, item) => sum + Number(item.amount || 0), 0);
-    const subscriptionGrants = ledger
+    const subscriptionGrants = billableLedger
       .filter((item) => item.type === 'subscription_grant')
       .reduce((sum, item) => sum + Number(item.amount || 0), 0);
     const imageGenerations = generations.filter((item) => item.imageAttached).length;
@@ -243,6 +265,13 @@ export class AdminService implements OnModuleInit {
         .slice()
         .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
         .slice(0, 8),
+    };
+  }
+
+  async getV0Account() {
+    return {
+      ...(await this.websiteService.getV0Health()),
+      checkedAt: new Date().toISOString(),
     };
   }
 

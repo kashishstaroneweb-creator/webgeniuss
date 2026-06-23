@@ -9,11 +9,13 @@ import { User } from '../entities/user.entity';
 import { Website } from '../entities/website.entity';
 import { WebsiteTemplate } from '../entities/website-template.entity';
 import { UserModule } from '../user/user.module';
+import { WebsiteModule } from '../website/website.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([User, Role, Website, WebsiteTemplate, CreditLedger, GenerationUsage]),
     UserModule,
+    WebsiteModule,
   ],
   controllers: [AdminController],
   providers: [AdminService],

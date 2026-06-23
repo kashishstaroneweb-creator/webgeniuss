@@ -12,7 +12,7 @@ export function StatsCards({
   totalProjects = 0,
   generations = 0,
   creditsUsed = 0,
-  creditsRemaining = 5,
+  creditsRemaining = 0,
   avgTimeSaved = '8h',
 }: StatsCardsProps) {
   const stats = [

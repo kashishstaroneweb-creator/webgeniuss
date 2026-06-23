@@ -24,6 +24,11 @@ export class AdminController {
     return this.adminService.getDashboard();
   }
 
+  @Get('v0-account')
+  async v0Account() {
+    return this.adminService.getV0Account();
+  }
+
   @Get('users')
   async users() {
     return this.adminService.listUsers();
