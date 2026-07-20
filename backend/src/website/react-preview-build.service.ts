@@ -956,6 +956,70 @@ if (typeof window !== 'undefined') {
         }
       } catch (err) {}
     }
+    function selectableElement(node) {
+      if (!node || !node.closest) return null;
+      var el = node;
+      // SVG paths are implementation details; select their meaningful SVG/control wrapper.
+      if (el.namespaceURI === 'http://www.w3.org/2000/svg') {
+        el = el.closest('button, a, svg') || el;
+      }
+      if (el === document.documentElement || el === document.body || el.id === 'root') {
+        return el.firstElementChild || el;
+      }
+      return el;
+    }
+    function elementPath(el) {
+      var parts = [];
+      var current = el;
+      while (current && current !== document.body && parts.length < 6) {
+        var part = current.tagName.toLowerCase();
+        if (current.id) {
+          parts.unshift(part + '#' + current.id);
+          break;
+        }
+        var parent = current.parentElement;
+        if (parent) {
+          var siblings = Array.prototype.filter.call(parent.children, function (child) {
+            return child.tagName === current.tagName;
+          });
+          if (siblings.length > 1) part += ':nth-of-type(' + (siblings.indexOf(current) + 1) + ')';
+        }
+        parts.unshift(part);
+        current = parent;
+      }
+      return parts.join(' > ');
+    }
+    var selectionEnabled = false;
+    var hovered = null;
+    document.addEventListener('mousemove', function (event) {
+      if (!selectionEnabled) return;
+      var next = selectableElement(event.target);
+      if (hovered === next) return;
+      if (hovered) hovered.style.outline = hovered.__webgeniusOldOutline || '';
+      hovered = next;
+      if (hovered) {
+        hovered.__webgeniusOldOutline = hovered.style.outline;
+        hovered.style.outline = '3px solid #8b5cf6';
+        hovered.style.outlineOffset = '-3px';
+      }
+    }, true);
+    document.addEventListener('click', function (event) {
+      if (!selectionEnabled) return;
+      var target = selectableElement(event.target);
+      if (!target) return;
+      event.preventDefault();
+      event.stopPropagation();
+      window.parent.postMessage({
+        type: 'PREVIEW_SECTION_SELECTED',
+        section: {
+          tag: target.tagName.toLowerCase(),
+          id: target.id || undefined,
+          classes: Array.prototype.slice.call(target.classList || [], 0, 8),
+          textPreview: String(target.innerText || target.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 240) || undefined,
+          domPath: elementPath(target)
+        }
+      }, '*');
+    }, true);
     function wrapHistoryMethod(name) {
       try {
         var original = window.history && window.history[name];
@@ -972,7 +1036,17 @@ if (typeof window !== 'undefined') {
     wrapHistoryMethod('replaceState');
     window.addEventListener('message', function (event) {
       var data = event && event.data;
-      if (!data || data.type !== 'PREVIEW_NAVIGATE') return;
+      if (!data) return;
+      if (data.type === 'PREVIEW_SELECTION_MODE') {
+        selectionEnabled = !!data.enabled;
+        document.body.style.cursor = selectionEnabled ? 'crosshair' : '';
+        if (!selectionEnabled && hovered) {
+          hovered.style.outline = hovered.__webgeniusOldOutline || '';
+          hovered = null;
+        }
+        return;
+      }
+      if (data.type !== 'PREVIEW_NAVIGATE') return;
       var next = normalizePath(data.path);
       var base = computeBase();
       var target = base === '/' ? next : base + (next === '/' ? '' : next);
@@ -989,6 +1063,9 @@ if (typeof window !== 'undefined') {
     } else {
       publishRoute();
     }
+    try {
+      window.parent.postMessage({ type: 'PREVIEW_BRIDGE_READY', capabilities: ['section-selection'] }, '*');
+    } catch (err) {}
   })();
 }
 `;

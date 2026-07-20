@@ -5,9 +5,9 @@ import { useSidebarStore } from '@/store/sidebarStore';
 import api from '@/lib/api';
 import Button from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Sparkles, Send, Eye, Code, Monitor, Download, Paperclip, Wand2, Mic, RotateCw, Smartphone, FileText, Image, X } from 'lucide-react';
+import { Sparkles, Send, Eye, Code, Monitor, Download, Paperclip, Wand2, Mic, RotateCw, Smartphone, FileText, Image, X, MessageSquare } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import WebsitePreview from '@/components/WebsitePreview';
+import WebsitePreview, { type PreviewSectionTarget } from '@/components/WebsitePreview';
 import { GeneratingLoader } from '@/components/GeneratingLoader';
 import { PromptInput, type WebsiteTemplate } from '@/components/PromptInput';
 import { StatsCards } from '@/components/StatsCards';
@@ -156,6 +156,9 @@ const Dashboard = () => {
   const [addOnPrompt, setAddOnPrompt] = useState('');
   const [editLoading, setEditLoading] = useState(false);
   const [rebuildLoading, setRebuildLoading] = useState(false);
+  const [sectionSelectionMode, setSectionSelectionMode] = useState(false);
+  const [selectedSection, setSelectedSection] = useState<PreviewSectionTarget | null>(null);
+  const [sectionComment, setSectionComment] = useState('');
   const [promptAttachments, setPromptAttachments] = useState<PromptAttachment[]>([]);
   const [editAttachments, setEditAttachments] = useState<PromptAttachment[]>([]);
   const [templates, setTemplates] = useState<WebsiteTemplate[]>([]);
@@ -709,7 +712,7 @@ const Dashboard = () => {
     }
   };
 
-  const handleEdit = async (overridePrompt?: string) => {
+  const handleEdit = async (overridePrompt?: string, targetSection?: PreviewSectionTarget) => {
     const imageAttachments = getV0ImageAttachments(editAttachments);
     const finalPrompt =
       (overridePrompt || addOnPrompt).trim() ||
@@ -735,6 +738,11 @@ const Dashboard = () => {
       setFramework(inferFrameworkFromWebsite(saved));
       setAddOnPrompt('');
       setEditAttachments([]);
+      if (targetSection) {
+        setSectionSelectionMode(false);
+        setSelectedSection(null);
+        setSectionComment('');
+      }
       if (nextId) syncWebsiteIdToUrl(nextId);
       void refreshCurrentUser();
     };
@@ -753,6 +761,7 @@ const Dashboard = () => {
           displayEditPrompt: finalPrompt,
           framework,
           attachments: imageAttachments,
+          targetSection,
         }),
       });
 
@@ -760,7 +769,7 @@ const Dashboard = () => {
       if (streamRes.status === 422) {
         const res = await api.post<GeneratedWebsite & { message?: string }>(
           `/website/${websiteId}/edit`,
-          { editPrompt, displayEditPrompt: finalPrompt, framework, attachments: imageAttachments },
+          { editPrompt, displayEditPrompt: finalPrompt, framework, attachments: imageAttachments, targetSection },
           { timeout: EDIT_SYNC_FALLBACK_TIMEOUT_MS }
         );
         applySaved({ ...res.data, id: res.data.id || websiteId });
@@ -1374,6 +1383,25 @@ const Dashboard = () => {
                   </CardTitle>
                   {generatedWebsite && (
                     <div className="flex w-full flex-wrap items-center gap-2 xl:w-auto xl:justify-end">
+                      {!showCodeView && (
+                        <Button
+                          variant={sectionSelectionMode ? 'default' : 'outline'}
+                          size="sm"
+                          onClick={() => {
+                            setSectionSelectionMode((active) => !active);
+                            setSelectedSection(null);
+                            setSectionComment('');
+                          }}
+                          disabled={editLoading || loading}
+                          className="gap-2"
+                          title="Select a section in the preview and leave an edit comment"
+                        >
+                          <MessageSquare className="h-4 w-4" />
+                          <span className="hidden 2xl:inline">
+                            {sectionSelectionMode ? 'Cancel selection' : 'Comment on section'}
+                          </span>
+                        </Button>
+                      )}
                       {(generatedWebsite.framework === 'react' || generatedWebsite.framework === 'html') && (
                         <Button
                           variant="outline"
@@ -1477,7 +1505,7 @@ const Dashboard = () => {
               </CardHeader>
               <CardContent
                 className={cn(
-                  'flex-1 overflow-hidden flex flex-col pt-6 min-w-0',
+                  'relative flex-1 overflow-hidden flex flex-col pt-6 min-w-0',
                   generatedWebsite && !showCodeView && previewDevice === 'mobile' && 'px-0 pt-2'
                 )}
               >
@@ -1980,6 +2008,8 @@ const Dashboard = () => {
                                   className="h-full min-h-0 rounded-none border-0 shadow-none"
                                   hideToolbar
                                   deviceMode="mobile"
+                                  selectionMode={sectionSelectionMode}
+                                  onSectionSelect={setSelectedSection}
                                 />
                               </MobilePreviewStudio>
                             ) : (
@@ -1994,10 +2024,56 @@ const Dashboard = () => {
                                 artifactUrl={generatedWebsite.reactArtifactUrl}
                                 prompt={generatedWebsite.prompt}
                                 className="h-full min-h-[600px]"
+                                selectionMode={sectionSelectionMode}
+                                onSectionSelect={setSelectedSection}
                               />
                             )
                           );
                         })()}
+                      </div>
+                    )}
+                    {sectionSelectionMode && !selectedSection && !showCodeView && (
+                      <div className="pointer-events-none absolute left-1/2 top-8 z-30 -translate-x-1/2 rounded-full bg-violet-600 px-4 py-2 text-sm font-medium text-white shadow-lg">
+                        Click the section you want to change
+                      </div>
+                    )}
+                    {sectionSelectionMode && selectedSection && !showCodeView && (
+                      <div className="absolute bottom-6 left-1/2 z-30 w-[min(92%,34rem)] -translate-x-1/2 rounded-xl border bg-background/95 p-4 shadow-2xl backdrop-blur">
+                        <div className="mb-2 flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold">Edit selected {selectedSection.tag}</p>
+                            <p className="truncate text-xs text-muted-foreground">
+                              {selectedSection.id ? `#${selectedSection.id}` : selectedSection.textPreview || selectedSection.domPath}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            className="text-muted-foreground hover:text-foreground"
+                            onClick={() => setSelectedSection(null)}
+                            aria-label="Close section comment"
+                          >
+                            <X className="h-4 w-4" />
+                          </button>
+                        </div>
+                        <textarea
+                          autoFocus
+                          value={sectionComment}
+                          onChange={(event) => setSectionComment(event.target.value)}
+                          placeholder="Describe what should change in only this section..."
+                          className="min-h-24 w-full resize-none rounded-lg border bg-background p-3 text-sm outline-none focus:ring-2 focus:ring-violet-500"
+                        />
+                        <div className="mt-3 flex justify-end gap-2">
+                          <Button variant="outline" size="sm" onClick={() => setSelectedSection(null)}>
+                            Choose another
+                          </Button>
+                          <Button
+                            size="sm"
+                            disabled={!sectionComment.trim() || editLoading}
+                            onClick={() => void handleEdit(sectionComment, selectedSection)}
+                          >
+                            {editLoading ? 'Applying...' : 'Apply comment'}
+                          </Button>
+                        </div>
                       </div>
                     )}
                   </div>

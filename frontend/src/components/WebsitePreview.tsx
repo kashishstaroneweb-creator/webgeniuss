@@ -35,6 +35,16 @@ interface WebsitePreviewProps {
   artifactUrl?: string;
   hideToolbar?: boolean;
   deviceMode?: 'desktop' | 'mobile';
+  selectionMode?: boolean;
+  onSectionSelect?: (section: PreviewSectionTarget) => void;
+}
+
+export interface PreviewSectionTarget {
+  tag: string;
+  id?: string;
+  classes: string[];
+  textPreview?: string;
+  domPath: string;
 }
 
 const HOSTED_PREVIEW_MIN_LOADER_MS = 5000;
@@ -207,8 +217,13 @@ const WebsitePreview = ({
   artifactUrl,
   hideToolbar = false,
   deviceMode = 'desktop',
+  selectionMode = false,
+  onSectionSelect,
 }: WebsitePreviewProps) => {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [iframeRevision, setIframeRevision] = useState(0);
+  const [hasSectionSelectionBridge, setHasSectionSelectionBridge] = useState(false);
+  const [hostedSelectionPoint, setHostedSelectionPoint] = useState<{ x: number; y: number } | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [previewPath, setPreviewPath] = useState('/');
   const hostedPreviewLoadStartedAtRef = useRef(Date.now());
@@ -233,6 +248,7 @@ const WebsitePreview = ({
   const [isHostedPreviewLoading, setIsHostedPreviewLoading] = useState(!!hostedPreviewUrl);
 
   useEffect(() => {
+    setHasSectionSelectionBridge(false);
     hostedPreviewLoadStartedAtRef.current = Date.now();
     if (hostedPreviewLoaderTimeoutRef.current) {
       window.clearTimeout(hostedPreviewLoaderTimeoutRef.current);
@@ -260,14 +276,102 @@ const WebsitePreview = ({
   }, [websiteName, artifactUrl, v0DemoUrl, hostedPreviewUrl]);
 
   useEffect(() => {
+    if (!selectionMode || hostedPreviewUrl) return;
+    const iframe = iframeRef.current;
+    const doc = iframe?.contentDocument;
+    if (!doc) return;
+
+    const style = doc.createElement('style');
+    style.dataset.webgeniusSelector = 'true';
+    style.textContent = `
+      [data-webgenius-hovered="true"] { outline: 3px solid #8b5cf6 !important; outline-offset: -3px !important; cursor: crosshair !important; }
+      body { cursor: crosshair !important; }
+    `;
+    doc.head?.appendChild(style);
+
+    let hovered: Element | null = null;
+    const selectable = (node: EventTarget | null): Element | null => {
+      let el = node instanceof Element ? node : null;
+      if (!el) return null;
+      if (el instanceof SVGElement) el = el.closest('button, a, svg') || el;
+      if (el === doc.documentElement || el === doc.body || el.id === 'root') return el.firstElementChild || el;
+      return el;
+    };
+    const pathFor = (el: Element) => {
+      const parts: string[] = [];
+      let current: Element | null = el;
+      while (current && current !== doc.body && parts.length < 6) {
+        let part = current.tagName.toLowerCase();
+        if (current.id) {
+          part += `#${current.id}`;
+          parts.unshift(part);
+          break;
+        }
+        const parentElement: Element | null = current.parentElement;
+        if (parentElement) {
+          const siblings = Array.from(parentElement.children).filter((child: Element) => child.tagName === current!.tagName);
+          if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(current) + 1})`;
+        }
+        parts.unshift(part);
+        current = parentElement;
+      }
+      return parts.join(' > ');
+    };
+    const handleMove = (event: MouseEvent) => {
+      const next = selectable(event.target);
+      if (hovered === next) return;
+      hovered?.removeAttribute('data-webgenius-hovered');
+      hovered = next;
+      hovered?.setAttribute('data-webgenius-hovered', 'true');
+    };
+    const handleClick = (event: MouseEvent) => {
+      const target = selectable(event.target);
+      if (!target) return;
+      event.preventDefault();
+      event.stopPropagation();
+      onSectionSelect?.({
+        tag: target.tagName.toLowerCase(),
+        id: target.id || undefined,
+        classes: Array.from(target.classList).filter((name) => !name.startsWith('webgenius')).slice(0, 8),
+        textPreview: (target.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 240) || undefined,
+        domPath: pathFor(target),
+      });
+    };
+    doc.addEventListener('mousemove', handleMove, true);
+    doc.addEventListener('click', handleClick, true);
+    return () => {
+      doc.removeEventListener('mousemove', handleMove, true);
+      doc.removeEventListener('click', handleClick, true);
+      hovered?.removeAttribute('data-webgenius-hovered');
+      style.remove();
+    };
+  }, [selectionMode, hostedPreviewUrl, onSectionSelect, iframeRevision]);
+
+  useEffect(() => {
     const handleMessage = (e: MessageEvent) => {
       if (e.data && e.data.type === 'PREVIEW_ROUTE_CHANGE') {
         setPreviewPath(e.data.path);
+      } else if (e.data && e.data.type === 'PREVIEW_BRIDGE_READY') {
+        setHasSectionSelectionBridge(Array.isArray(e.data.capabilities) && e.data.capabilities.includes('section-selection'));
+      } else if (e.data && e.data.type === 'PREVIEW_SECTION_SELECTED' && e.data.section) {
+        onSectionSelect?.(e.data.section as PreviewSectionTarget);
       }
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, []);
+  }, [onSectionSelect]);
+
+  useEffect(() => {
+    if (!hostedPreviewUrl || !hasSectionSelectionBridge) return;
+    iframeRef.current?.contentWindow?.postMessage(
+      { type: 'PREVIEW_SELECTION_MODE', enabled: selectionMode },
+      '*',
+    );
+  }, [hostedPreviewUrl, hasSectionSelectionBridge, selectionMode]);
+
+  useEffect(() => {
+    if (!selectionMode) setHostedSelectionPoint(null);
+  }, [selectionMode]);
 
   const routeSuggestions = useMemo(() => {
     const out = new Set<string>();
@@ -1350,6 +1454,7 @@ window.__PREVIEW_PARAMS__ = JSON.parse('${placeholderParamsEscaped}');
           doc.open();
           doc.write(content);
           doc.close();
+          setIframeRevision((revision) => revision + 1);
         } catch (error) {
           console.error('Error loading iframe content:', error);
         }
@@ -1577,6 +1682,35 @@ window.__PREVIEW_PARAMS__ = JSON.parse('${placeholderParamsEscaped}');
           allowFullScreen
           onLoad={handleIframeLoad}
         />
+        {selectionMode && hostedPreviewUrl && !hasSectionSelectionBridge && !isHostedPreviewLoading && (
+          <button
+            type="button"
+            className="absolute inset-0 z-20 cursor-crosshair border-0 bg-transparent"
+            aria-label="Select an area of the website preview"
+            title="Click the section you want to change"
+            onClick={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              const xPercent = Math.max(0, Math.min(100, ((event.clientX - rect.left) / rect.width) * 100));
+              const yPercent = Math.max(0, Math.min(100, ((event.clientY - rect.top) / rect.height) * 100));
+              setHostedSelectionPoint({ x: xPercent, y: yPercent });
+              onSectionSelect?.({
+                tag: 'visual-region',
+                classes: [],
+                textPreview: `Selected visual area at ${Math.round(xPercent)}% from the left and ${Math.round(yPercent)}% from the top of the current preview`,
+                domPath: `viewport[x=${xPercent.toFixed(1)}%,y=${yPercent.toFixed(1)}%]`,
+              });
+            }}
+          >
+            <span className="sr-only">Click the section you want to change</span>
+          </button>
+        )}
+        {selectionMode && hostedPreviewUrl && !hasSectionSelectionBridge && hostedSelectionPoint && (
+          <div
+            className="pointer-events-none absolute z-30 h-10 w-10 -translate-x-1/2 -translate-y-1/2 rounded-full border-4 border-violet-500 bg-violet-500/20 shadow-[0_0_0_4px_rgba(255,255,255,0.9)]"
+            style={{ left: `${hostedSelectionPoint.x}%`, top: `${hostedSelectionPoint.y}%` }}
+            aria-hidden="true"
+          />
+        )}
         {isHostedPreviewLoading && (
           <div className="absolute inset-0 z-10 bg-background">
             <GeneratingLoader

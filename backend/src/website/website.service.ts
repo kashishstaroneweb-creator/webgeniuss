@@ -79,6 +79,10 @@ export class WebsiteService {
     return clean.length > 220 ? `${clean.slice(0, 220)}...` : clean;
   }
 
+  private isCreditBypassEnabled(): boolean {
+    return process.env.NODE_ENV !== 'production' && process.env.TEST_BYPASS_CREDITS === 'true';
+  }
+
   private async beginUsage(args: {
     userId: string;
     kind: 'generate' | 'edit';
@@ -100,7 +104,7 @@ export class WebsiteService {
       throw err;
     }
     const balance = Number(user.creditsBalance ?? (Number(process.env.DEFAULT_USER_CREDITS) || 5));
-    if (balance < args.credits) {
+    if (!this.isCreditBypassEnabled() && balance < args.credits) {
       const err = new Error(`Not enough credits. Required ${args.credits}, available ${balance}.`) as Error & { status?: number };
       err.status = 402;
       throw err;
@@ -127,28 +131,31 @@ export class WebsiteService {
   ) {
     if (!usage) return;
     const now = new Date();
-    const user = await this.userRepository.findOne({ where: { _id: new ObjectId(userId) } as any });
-    const before = Number(user?.creditsBalance || 0);
-    const after = Math.max(0, before - credits);
-    if (user) {
-      user.creditsBalance = after;
-      user.creditsUsed = Number(user.creditsUsed || 0) + credits;
-      await this.userRepository.save(user);
-      await this.creditLedgerRepository.save(
-        this.creditLedgerRepository.create({
-          userId,
-          type: 'generation',
-          amount: -credits,
-          balanceBefore: before,
-          balanceAfter: after,
-          reason: `${usage.kind} ${usage.framework || ''}`.trim(),
-          referenceId: details.websiteId || (usage as any)._id?.toString() || usage.id?.toString(),
-          createdBy: 'system',
-        }),
-      );
+    const bypassCredits = this.isCreditBypassEnabled();
+    if (!bypassCredits) {
+      const user = await this.userRepository.findOne({ where: { _id: new ObjectId(userId) } as any });
+      const before = Number(user?.creditsBalance || 0);
+      const after = Math.max(0, before - credits);
+      if (user) {
+        user.creditsBalance = after;
+        user.creditsUsed = Number(user.creditsUsed || 0) + credits;
+        await this.userRepository.save(user);
+        await this.creditLedgerRepository.save(
+          this.creditLedgerRepository.create({
+            userId,
+            type: 'generation',
+            amount: -credits,
+            balanceBefore: before,
+            balanceAfter: after,
+            reason: `${usage.kind} ${usage.framework || ''}`.trim(),
+            referenceId: details.websiteId || (usage as any)._id?.toString() || usage.id?.toString(),
+            createdBy: 'system',
+          }),
+        );
+      }
     }
     usage.status = 'success';
-    usage.actualCostCredits = credits;
+    usage.actualCostCredits = bypassCredits ? 0 : credits;
     usage.websiteId = details.websiteId || usage.websiteId;
     usage.v0ChatId = details.v0ChatId;
     usage.v0DemoUrl = details.v0DemoUrl;
@@ -1712,6 +1719,30 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       }
     }
 
+    let usedHostedOnlyFallback = false;
+    const returnedSourceCode =
+      (websiteCode?.components?.length ?? 0) > 0 ||
+      !!(websiteCode?.viteConfig?.mainJsx || websiteCode?.viteConfig?.mainJs) ||
+      !!(websiteCode?.html || websiteCode?.HTML || websiteCode?.js || websiteCode?.css);
+    if (!returnedSourceCode && v0DemoUrl) {
+      // Some v0 follow-up turns update latestVersion/demoUrl without including files in the
+      // terminal chat payload. Preserve the last downloadable source rather than rejecting
+      // an otherwise successful hosted edit.
+      usedHostedOnlyFallback = true;
+      websiteCode = {
+        ...websiteCode,
+        components: website.components || [],
+        viteConfig: website.viteConfig || null,
+        html: website.htmlCode || '',
+        css: website.cssCode || '',
+        js: website.jsCode || '',
+      };
+      console.warn(
+        'WebsiteService.saveWebsiteEditFromFetchedCode - v0 returned an updated hosted demo without files; preserving saved source',
+        { websiteId, v0DemoUrl },
+      );
+    }
+
     const components = websiteCode.components || [];
     const viteConfig = websiteCode.viteConfig || null;
     const hasViteAppCode = !!(viteConfig?.mainJsx || viteConfig?.mainJs);
@@ -1744,7 +1775,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       (typeof htmlCode === 'string' && htmlCode.trim().length > 0) ||
       (typeof jsCode === 'string' && jsCode.trim().length > 0) ||
       (typeof cssCode === 'string' && cssCode.trim().length > 0);
-    const hasValidCode = components.length > 0 || hasViteAppCode || hasLegacySnippet;
+    const hasValidCode = components.length > 0 || hasViteAppCode || hasLegacySnippet || usedHostedOnlyFallback;
     if (!hasValidCode) {
       const err = new Error('The AI did not return valid website code for the edit. Try rephrasing your request.') as Error & { status?: number };
       err.status = 422;
@@ -1766,7 +1797,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     website.prompt = (website.prompt || '') + '\n[Edit] ' + editPrompt;
     website.v0ChatId = newV0ChatId;
     website.v0DemoUrl = v0DemoUrl || undefined;
-    if (website.framework === 'react' || website.framework === 'html') {
+    if (!usedHostedOnlyFallback && (website.framework === 'react' || website.framework === 'html')) {
       website.reactBuildStatus = 'queued';
       website.reactBuildLog = undefined;
       website.reactArtifactUrl = undefined;
@@ -1775,13 +1806,13 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       website.reactBuildFinishedAt = undefined;
     }
     let savedWebsite = await this.websiteRepository.save(website);
-    if (savedWebsite.framework === 'react') {
+    if (!usedHostedOnlyFallback && savedWebsite.framework === 'react') {
       console.log('WebsiteService.saveWebsiteEditFromFetchedCode - re-queueing React build after edit:', {
         websiteId: savedWebsite.id.toString(),
         status: savedWebsite.reactBuildStatus || null,
       });
       void this.reactPreviewBuildService.enqueue(savedWebsite.id.toString());
-    } else if (savedWebsite.framework === 'html') {
+    } else if (!usedHostedOnlyFallback && savedWebsite.framework === 'html') {
       console.log('WebsiteService.saveWebsiteEditFromFetchedCode - publishing static HTML preview after edit:', {
         websiteId: savedWebsite.id.toString(),
       });

@@ -15,6 +15,34 @@ export class WebsiteController {
     return user.id || user._id?.toString();
   }
 
+  private scopedEditPrompt(editDto: EditWebsiteDto): string {
+    const target = editDto.targetSection;
+    if (!target) return editDto.editPrompt;
+    const details = [
+      `Element: ${target.tag}`,
+      target.id ? `ID: ${target.id}` : '',
+      target.classes?.length ? `Classes: ${target.classes.join(' ')}` : '',
+      `DOM path: ${target.domPath}`,
+      target.textPreview ? `Visible text excerpt: ${target.textPreview}` : '',
+    ].filter(Boolean);
+    const visualGuidance = target.tag === 'visual-region'
+      ? 'Use the viewport coordinates to identify the visible section at that point by inspecting the current page structure and rendered layout.'
+      : 'Use the element metadata and visible text to identify the exact section in the current source.';
+    return [
+      'Apply a targeted edit to ONLY the selected website section described below.',
+      'Preserve every other section, route, style, behavior, and file unless a tiny supporting change is strictly required.',
+      'Do not remove or rewrite unrelated content.',
+      visualGuidance,
+      'Return the complete updated project files, not only an explanation or patch description.',
+      '',
+      'Selected section:',
+      ...details,
+      '',
+      'Requested change:',
+      editDto.editPrompt,
+    ].join('\n');
+  }
+
   @Post('generate')
   @UseGuards(JwtAuthGuard)
   async generate(@CurrentUser() user: any, @Body() generateDto: GenerateWebsiteDto) {
@@ -186,7 +214,7 @@ export class WebsiteController {
         res,
         userId,
         websiteId,
-        editDto.editPrompt,
+        this.scopedEditPrompt(editDto),
         editDto.framework,
         editDto.attachments,
         editDto.displayEditPrompt,
@@ -216,7 +244,7 @@ export class WebsiteController {
       return await this.websiteService.editWebsite(
         websiteId,
         userId,
-        editDto.editPrompt,
+        this.scopedEditPrompt(editDto),
         editDto.framework,
         editDto.attachments,
         editDto.displayEditPrompt,
