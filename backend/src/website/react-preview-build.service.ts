@@ -296,11 +296,17 @@ export class ReactPreviewBuildService {
 
     const packageJson = this.normalizePackageJson(pkgRaw);
     const viteConfig = this.normalizeViteConfig(vite.viteConfig);
-    const indexHtml = vite.indexHtml || this.defaultIndexHtml(site.websiteName || 'React Preview');
+    const indexHtml = this.injectFullStackRuntimeConfig(
+      vite.indexHtml || this.defaultIndexHtml(site.websiteName || 'React Preview'),
+      site,
+    );
     const mainJsxRaw = vite.mainJsx || vite.mainJs || this.defaultMainJsx(site.components || []);
     const mainJsxWithImports = this.ensureEntryImports(mainJsxRaw, site.components || []);
     const mainJsx = this.stripTypeScriptSyntaxForPreview(
-      this.injectPreviewMessagingBridge(this.injectPreviewRouterBasename(mainJsxWithImports)),
+      this.rewriteRelativeApiCalls(
+        this.injectPreviewMessagingBridge(this.injectPreviewRouterBasename(mainJsxWithImports)),
+        site,
+      ),
       'src/main.jsx',
     );
     const styleCss = this.withDevicePreviewScrollCss(vite.styleCss || '');
@@ -314,8 +320,38 @@ export class ReactPreviewBuildService {
     for (const c of site.components || []) {
       const relPath = this.sanitizeRelativePath(c.path || `src/components/${c.name || 'Component'}.jsx`);
       if (!relPath) continue;
-      await this.writeFileSafe(workspaceDir, relPath, this.stripTypeScriptSyntaxForPreview(c.code || '', relPath));
+      await this.writeFileSafe(
+        workspaceDir,
+        relPath,
+        this.stripTypeScriptSyntaxForPreview(this.rewriteRelativeApiCalls(c.code || '', site), relPath),
+      );
     }
+  }
+
+  private fullStackApiBase(site: Website): string | null {
+    if (!site.backendFiles?.length) return null;
+    const backendBase = (
+      process.env.BACKEND_PUBLIC_BASE_URL ||
+      process.env.RENDER_EXTERNAL_URL ||
+      'http://localhost:3000'
+    ).replace(/\/+$/, '');
+    return `${backendBase}/fullstack/runtime/${site.id.toString()}`;
+  }
+
+  private injectFullStackRuntimeConfig(html: string, site: Website): string {
+    const apiBase = this.fullStackApiBase(site);
+    if (!apiBase) return html;
+    const script = `<script>globalThis.__WEBGENIUS_API_BASE__=${JSON.stringify(apiBase)};</script>`;
+    if (/<\/head>/i.test(html)) return html.replace(/<\/head>/i, `  ${script}\n</head>`);
+    return `${script}\n${html}`;
+  }
+
+  private rewriteRelativeApiCalls(code: string, site: Website): string {
+    if (!this.fullStackApiBase(site) || !code) return code;
+    return code.replace(
+      /\bfetch\s*\(\s*(['"`])\/api/g,
+      (_match, quote: string) => `fetch((globalThis.__WEBGENIUS_API_BASE__ || '') + ${quote}/api`,
+    );
   }
 
   private async writeStaticProjectFiles(distDir: string, site: Website): Promise<void> {

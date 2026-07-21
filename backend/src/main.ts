@@ -15,8 +15,15 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bodyParser: false });
   
   // Enable CORS
+  const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:5173')
+    .split(',')
+    .map((origin) => origin.trim().replace(/\/+$/, ''))
+    .filter(Boolean);
   app.enableCors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin.replace(/\/+$/, ''))) return callback(null, true);
+      return callback(new Error('Origin is not allowed by CORS'));
+    },
     credentials: true,
   });
 
@@ -37,7 +44,7 @@ async function bootstrap() {
   );
 
   const port = process.env.PORT || 3000;
-  await app.listen(port);
+  await app.listen(port, '0.0.0.0');
   // v0 generation/edit can exceed 5m (polling + long sync); keep sockets open (default 900s, override with HTTP_SERVER_TIMEOUT_MS).
   const serverTimeoutMs = Number(process.env.HTTP_SERVER_TIMEOUT_MS) || 900_000;
   app.getHttpServer().setTimeout(serverTimeoutMs);

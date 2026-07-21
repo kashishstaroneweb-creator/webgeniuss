@@ -9,6 +9,8 @@ import { WebsiteModule } from './website/website.module';
 import { RoleModule } from './role/role.module';
 import { AdminModule } from './admin/admin.module';
 import { LoggingMiddleware } from './common/middleware/logging.middleware';
+import { FullStackModule } from './fullstack/fullstack.module';
+import { AppController } from './app.controller';
 
 @Module({
   imports: [
@@ -31,7 +33,9 @@ import { LoggingMiddleware } from './common/middleware/logging.middleware';
     WebsiteModule,
     RoleModule,
     AdminModule,
+    FullStackModule,
   ],
+  controllers: [AppController],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {

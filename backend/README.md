@@ -51,4 +51,24 @@ src/
 ## API Documentation
 
 See main README.md for API endpoints.
+# Full-stack MVP generation
 
+`POST /fullstack/generate` creates a shared application blueprint, asks Claude for a small plain Node.js/Express backend, derives the React UI prompt from the same API contract, and sends that UI prompt through the existing v0 pipeline. Both halves are saved on one website record.
+
+Required backend environment variables:
+
+```env
+ANTHROPIC_API_KEY=your-anthropic-api-key
+CLAUDE_MODEL=claude-sonnet-4-20250514
+```
+
+`CLAUDE_MODEL` is configurable so model upgrades do not require a code change. Generated backends are restricted to `server.js`, `package.json`, `data.json`, and `.env.example`, with only `express`, `cors`, and `dotenv` allowed as dependencies. This endpoint generates and stores the backend; local process execution is added separately so generation can be validated before generated code is run.
+
+Runtime controls:
+
+- `POST /fullstack/:id/backend/start`
+- `POST /fullstack/:id/backend/stop`
+- `GET /fullstack/:id/backend/status`
+- `ALL /fullstack/runtime/:id/api/*` (public preview gateway)
+
+The local runner installs only approved dependencies with lifecycle scripts disabled and launches the generated server with a reduced environment. It is suitable for a controlled MVP/private beta, not strong production isolation.

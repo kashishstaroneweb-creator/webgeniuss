@@ -1,0 +1,51 @@
+services:
+  - type: web
+    name: webgenius-api
+    runtime: node
+    plan: free
+    rootDir: backend
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start:prod
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 24.14.1
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: MONGODB_URI
+        sync: false
+      - key: V0_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: CLAUDE_MODEL
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: REACT_PREVIEW_STORAGE
+        value: r2
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_PUBLIC_BASE_URL
+        sync: false
+      - key: FULLSTACK_RUNTIME_ROOT
+        value: /tmp/webgenius-fullstack
+      - key: FULLSTACK_SHARED_DEPENDENCIES
+        value: "1"
+      - key: FULLSTACK_MAX_ACTIVE
+        value: "2"
+      - key: FULLSTACK_PORT_START
+        value: "4100"
+      - key: FULLSTACK_PORT_END
+        value: "4101"
+      - key: FULLSTACK_IDLE_TIMEOUT_MS
+        value: "900000"

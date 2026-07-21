@@ -2,6 +2,28 @@ import { Entity, Column, ObjectIdColumn, CreateDateColumn, ManyToOne, JoinColumn
 import { ObjectId } from 'mongodb';
 import { User } from './user.entity';
 
+export interface GeneratedProjectFile {
+  path: string;
+  content: string;
+}
+
+export interface FullStackBlueprint {
+  projectName: string;
+  summary: string;
+  features: string[];
+  dataModels: Array<{
+    name: string;
+    fields: Array<{ name: string; type: 'string' | 'number' | 'boolean'; required: boolean }>;
+  }>;
+  api: Array<{
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+    path: string;
+    description: string;
+    requestBody?: Record<string, string>;
+    responseShape: string;
+  }>;
+}
+
 @Entity('websites')
 export class Website {
   @ObjectIdColumn()
@@ -59,6 +81,29 @@ export class Website {
 
   @Column({ nullable: true })
   generatedPath?: string;
+
+  /** Shared contract used by Claude for the API and v0 for the UI. */
+  @Column({ type: 'json', nullable: true })
+  fullStackBlueprint?: FullStackBlueprint;
+
+  /** Plain Node.js/Express files generated separately by Claude. */
+  @Column({ type: 'json', nullable: true })
+  backendFiles?: GeneratedProjectFile[];
+
+  @Column({ nullable: true })
+  backendStatus?: 'generated' | 'installing' | 'running' | 'stopped' | 'failed';
+
+  @Column({ type: 'text', nullable: true })
+  backendLogs?: string;
+
+  @Column({ nullable: true })
+  backendPort?: number;
+
+  @Column({ nullable: true })
+  backendProcessId?: number;
+
+  @Column({ nullable: true })
+  backendPreviewUrl?: string;
 
   /** v0 Platform API chat id (source of truth for hosted demo). */
   @Column({ nullable: true })

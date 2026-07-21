@@ -41,4 +41,7 @@ lerna-debug.log*
 
 # Generated sites
 /generated_sites
+/.preview-builds
+/.preview-artifacts
+/.fullstack-runtimes
 
