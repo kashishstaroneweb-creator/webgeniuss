@@ -341,7 +341,10 @@ export class ReactPreviewBuildService {
       process.env.RENDER_EXTERNAL_URL ||
       'http://localhost:3000'
     ).replace(/\/+$/, '');
-    return `${backendBase}/fullstack/runtime/${site.id.toString()}`;
+    const runtimePath = site.backendPreviewUrl?.startsWith('/fullstack/runtime/')
+      ? site.backendPreviewUrl
+      : `/fullstack/runtime/${site.id.toString()}`;
+    return `${backendBase}${runtimePath}`;
   }
 
   private injectFullStackRuntimeConfig(html: string, site: Website): string {

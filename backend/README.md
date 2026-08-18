@@ -13,6 +13,8 @@ npm install
 ```env
 MONGODB_URI=mongodb://localhost:27017/webgenius
 JWT_SECRET=your-secret-key
+BACKEND_GENERATOR_URL=https://webgeniuss.onrender.com
+BACKEND_PUBLIC_BASE_URL=https://webgeniuss.onrender.com
 V0_API_KEY=your-v0-api-key
 OPENAI_API_KEY=your-openai-api-key
 OPENAI_BACKEND_MODEL=gpt-4.1-mini

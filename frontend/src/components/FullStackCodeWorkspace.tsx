@@ -1,10 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { Braces, Database, Loader2, Monitor, Play, Server, Square, Terminal } from 'lucide-react';
+import { Braces, Database, Monitor, Server, Terminal } from 'lucide-react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import backendGeneratorApi from '@/lib/backendGeneratorApi';
 import { cn } from '@/lib/utils';
-import Button from './ui/Button';
 
 interface GeneratedFile { path: string; content: string }
 
@@ -19,7 +17,6 @@ interface FullStackProject {
 export function FullStackCodeWorkspace({
   project,
   children,
-  onProjectUpdate,
 }: {
   project: FullStackProject;
   children: ReactNode;
@@ -30,7 +27,6 @@ export function FullStackCodeWorkspace({
   const [fileIndex, setFileIndex] = useState(0);
   const [status, setStatus] = useState(project.backendStatus || 'generated');
   const [logs, setLogs] = useState(project.backendLogs || '');
-  const [runtimeLoading, setRuntimeLoading] = useState(false);
 
   useEffect(() => {
     setStatus(project.backendStatus || 'generated');
@@ -43,21 +39,6 @@ export function FullStackCodeWorkspace({
 
   const files = project.backendFiles || [];
   const activeFile = files[fileIndex] || files[0];
-  const runAction = async (action: 'start' | 'stop') => {
-    setRuntimeLoading(true);
-    try {
-      const response = await backendGeneratorApi.post(`/fullstack/${project.id}/backend/${action}`);
-      setStatus(response.data.backendStatus);
-      setLogs(response.data.backendLogs || '');
-      onProjectUpdate?.(response.data);
-    } catch (error: any) {
-      setLogs(error.response?.data?.message || error.message || `Unable to ${action} backend`);
-      setStatus('failed');
-    } finally {
-      setRuntimeLoading(false);
-    }
-  };
-
   const languageFor = (path: string) => path.endsWith('.json') ? 'json' : path.endsWith('.env.example') ? 'bash' : 'javascript';
   const statusColor = status === 'running' ? 'bg-emerald-400' : status === 'failed' ? 'bg-red-400' : status === 'installing' ? 'bg-amber-400 animate-pulse' : 'bg-zinc-400';
 
@@ -76,11 +57,7 @@ export function FullStackCodeWorkspace({
           <span className={cn('h-2.5 w-2.5 rounded-full', statusColor)} />
           <span className="capitalize">{status}</span>
           <span className="hidden sm:inline">• JSON datastore</span>
-          {status === 'running' ? (
-            <Button variant="outline" size="sm" onClick={() => runAction('stop')} disabled={runtimeLoading} className="h-8 gap-1.5"><Square className="h-3.5 w-3.5" /> Stop</Button>
-          ) : (
-            <Button variant="outline" size="sm" onClick={() => runAction('start')} disabled={runtimeLoading} className="h-8 gap-1.5">{runtimeLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />} Start API</Button>
-          )}
+          <span className="rounded-md border px-2 py-1">Managed on Render</span>
         </div>
       </div>
 
