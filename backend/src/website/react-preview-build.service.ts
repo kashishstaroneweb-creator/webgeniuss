@@ -199,7 +199,13 @@ export class ReactPreviewBuildService {
         componentCount: site.components?.length || 0,
       });
 
-      logs += await this.runCommand('npm', ['install', '--no-audit', '--no-fund'], workspaceDir, 240_000);
+      // Render runs with NODE_ENV=production, which otherwise omits Vite and other devDependencies.
+      logs += await this.runCommand(
+        'npm',
+        ['install', '--include=dev', '--no-audit', '--no-fund'],
+        workspaceDir,
+        240_000,
+      );
       logs += await this.runCommand('npm', ['run', 'build'], workspaceDir, 240_000);
 
       const distDir = path.join(workspaceDir, 'dist');
