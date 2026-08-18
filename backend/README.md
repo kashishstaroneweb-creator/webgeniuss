@@ -14,13 +14,14 @@ npm install
 MONGODB_URI=mongodb://localhost:27017/webgenius
 JWT_SECRET=your-secret-key
 V0_API_KEY=your-v0-api-key
-# Legacy alias: OPENAI_API_KEY is copied to V0_API_KEY at runtime for the official v0 client.
+OPENAI_API_KEY=your-openai-api-key
+OPENAI_BACKEND_MODEL=gpt-4.1-mini
 # Keys: https://v0.app/chat/settings/keys — optional V0_API_URL, V0_PLATFORM_MODEL_ID
 # Website generate/edit: attempt 1 = async + poll; attempts 2+ = sync (long POST) unless V0_WEBSITE_RETRY_WITH_SYNC=0. V0_RESPONSE_MODE only affects GET /website/v0-chat-check.
 # Polling: V0_POLL_INITIAL_DELAY_MS (default 12000). V0_POLL_MAX_NOT_FOUND_MS (default 180000) caps total time spent in chat_not_found before retry. V0_POLL_INTERVAL_MS, V0_POLL_MAX_MS, V0_POLL_MAX_BACKOFF_MS, V0_GET_CHAT_TIMEOUT_MS.
 # V0_CREATE_USE_AXIOS_FIRST=0 to use SDK fetch first; default axios first for POST /chats. V0_CREATE_ASYNC_TIMEOUT_MS (default 180000), V0_CREATE_TIMEOUT_MS for sync (default 600000)
 # Windows: main.ts sets dns ipv4first unless V0_DNS_IPV4_FIRST=0 (helps some Undici fetch failures).
-# If you still get 401 after rotating keys: remove V0_API_KEY / OPENAI_API_KEY from Windows User/System environment variables (they override `.env` unless you use load-env override — already enabled in `src/load-env.ts`).
+# If v0 still returns 401 after rotating its key, remove stale V0_API_KEY values from Windows User/System environment variables (they override `.env` unless you use load-env override — already enabled in `src/load-env.ts`).
 # Debug: set V0_DEBUG_AUTH=1 to log key length and base URL on startup (no secret printed).
 # ... see .env.example for all variables
 ```
@@ -53,16 +54,16 @@ src/
 See main README.md for API endpoints.
 # Full-stack MVP generation
 
-`POST /fullstack/generate` creates a shared application blueprint, asks Claude for a small plain Node.js/Express backend, derives the React UI prompt from the same API contract, and sends that UI prompt through the existing v0 pipeline. Both halves are saved on one website record.
+`POST /fullstack/generate` creates a shared application blueprint, asks OpenAI for a small plain Node.js/Express backend, derives the React UI prompt from the same API contract, and sends that UI prompt through the existing v0 pipeline. Both halves are saved on one website record.
 
 Required backend environment variables:
 
 ```env
-ANTHROPIC_API_KEY=your-anthropic-api-key
-CLAUDE_MODEL=claude-sonnet-4-20250514
+OPENAI_API_KEY=your-openai-api-key
+OPENAI_BACKEND_MODEL=gpt-4.1-mini
 ```
 
-`CLAUDE_MODEL` is configurable so model upgrades do not require a code change. Generated backends are restricted to `server.js`, `package.json`, `data.json`, and `.env.example`, with only `express`, `cors`, and `dotenv` allowed as dependencies. This endpoint generates and stores the backend; local process execution is added separately so generation can be validated before generated code is run.
+`OPENAI_BACKEND_MODEL` is configurable so model upgrades do not require a code change. Generated backends are restricted to `server.js`, `package.json`, `data.json`, and `.env.example`, with only `express`, `cors`, and `dotenv` allowed as dependencies. Keep `V0_API_KEY` configured separately for frontend generation; `OPENAI_API_KEY` is only for backend generation. This endpoint generates and stores the backend before its preview runtime is started.
 
 Runtime controls:
 

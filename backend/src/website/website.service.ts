@@ -190,8 +190,7 @@ export class WebsiteService {
     private reactPreviewBuildService: ReactPreviewBuildService,
   ) {
     const v0Key = WebsiteService.normalizeV0ApiKey(process.env.V0_API_KEY);
-    const legacyAlias = WebsiteService.normalizeV0ApiKey(process.env.OPENAI_API_KEY);
-    const apiKey = v0Key || legacyAlias;
+    const apiKey = v0Key;
     if (apiKey) process.env.V0_API_KEY = apiKey;
     const baseUrl = (process.env.V0_API_URL || 'https://api.v0.dev/v1').replace(/\/+$/, '');
     this.v0Platform = createClient({
@@ -977,7 +976,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
       // Provide more helpful error messages for v0 API
       if (error.message.includes('401') || error.message.includes('Incorrect API key')) {
         const err = new Error(
-          `Failed to generate website: v0 Platform API returned 401 (Unauthorized). Use an active API key from https://v0.app/chat/settings/keys (Platform API access; paid plan may be required). Paste the full secret once, no quotes or "Bearer ". Remove any OPENAI_API_KEY that is not a v0 key so it does not override. If the key was shared publicly, revoke it and create a new one.`,
+          `Failed to generate website: v0 Platform API returned 401 (Unauthorized). Use an active V0_API_KEY from https://v0.app/chat/settings/keys (Platform API access; paid plan may be required). Paste the full secret once, no quotes or "Bearer ". If the key was shared publicly, revoke it and create a new one.`,
         ) as Error & { status?: number };
         err.status = 401;
         throw err;
@@ -2779,7 +2778,7 @@ DESIGN (MANDATORY - PRODUCTION-READY):
     }
 
     if (status === 401) {
-      return 'v0 rejected the API key (401). Add a valid V0_API_KEY from v0 settings, restart the backend, and make sure OPENAI_API_KEY is not being used as the v0 key.';
+      return 'v0 rejected the API key (401). Add a valid V0_API_KEY from v0 settings and restart the backend.';
     }
 
     if (status === 403 || /forbidden_error/i.test(providerType)) {

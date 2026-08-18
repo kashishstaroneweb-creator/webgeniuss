@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Check, Eye, Send, Paperclip, Wand2, Sparkles, Mic, LayoutTemplate, FileText, Image, X } from 'lucide-react';
+import { Check, Eye, Send, Paperclip, Wand2, Sparkles, Mic, LayoutTemplate, FileText, Image, X, Layers3, Monitor } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useVoiceRecognition } from '@/lib/useVoiceRecognition';
 import { VoiceVisualizer } from '@/components/VoiceVisualizer';
@@ -104,6 +104,8 @@ interface PromptInputProps {
   onGenerate: (overridePrompt?: string) => void;
   framework: 'next' | 'react' | 'html';
   setFramework: (value: 'next' | 'react' | 'html') => void;
+  fullStackMode?: boolean;
+  setFullStackMode?: (value: boolean) => void;
   attachments?: { id: string; name: string; type?: string; size: number; dataUrl?: string }[];
   onAttachFiles?: (files: FileList) => void;
   onRemoveAttachment?: (id: string) => void;
@@ -121,6 +123,8 @@ export function PromptInput({
   onGenerate,
   framework,
   setFramework,
+  fullStackMode = false,
+  setFullStackMode,
   attachments = [],
   onAttachFiles,
   onRemoveAttachment,
@@ -305,6 +309,37 @@ export function PromptInput({
             <div className="flex items-center rounded-xl border border-border/70 bg-background/50 p-0.5 shadow-sm">
               <button
                 type="button"
+                onClick={() => setFullStackMode?.(false)}
+                disabled={disabled || loading}
+                aria-pressed={!fullStackMode}
+                className={cn(
+                  'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-all disabled:opacity-50',
+                  !fullStackMode ? 'bg-secondary text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                <Monitor className="h-3.5 w-3.5" /> Frontend
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setFullStackMode?.(true);
+                  setFramework('react');
+                }}
+                disabled={disabled || loading}
+                aria-pressed={fullStackMode}
+                className={cn(
+                  'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-all disabled:opacity-50',
+                  fullStackMode
+                    ? 'bg-emerald-500 text-white shadow-md shadow-emerald-500/20'
+                    : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
+                )}
+              >
+                <Layers3 className="h-3.5 w-3.5" /> Full stack
+              </button>
+            </div>
+            {!fullStackMode && <div className="flex items-center rounded-xl border border-border/70 bg-background/50 p-0.5 shadow-sm">
+              <button
+                type="button"
                 onClick={() => setFramework('next')}
                 disabled={disabled || loading}
                 aria-pressed={framework === 'next'}
@@ -345,7 +380,7 @@ export function PromptInput({
               >
                 HTML
               </button>
-            </div>
+            </div>}
           </div>
 
           <button

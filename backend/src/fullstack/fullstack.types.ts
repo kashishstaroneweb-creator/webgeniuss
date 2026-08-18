@@ -1,6 +1,6 @@
 import { FullStackBlueprint, GeneratedProjectFile } from '../entities/website.entity';
 
-export interface ClaudeFullStackPlan {
+export interface FullStackPlan {
   blueprint: FullStackBlueprint;
   backendFiles: GeneratedProjectFile[];
 }

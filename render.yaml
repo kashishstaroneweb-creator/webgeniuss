@@ -19,10 +19,10 @@ services:
         sync: false
       - key: V0_API_KEY
         sync: false
-      - key: ANTHROPIC_API_KEY
+      - key: OPENAI_API_KEY
         sync: false
-      - key: CLAUDE_MODEL
-        sync: false
+      - key: OPENAI_BACKEND_MODEL
+        value: gpt-4.1-mini
       - key: FRONTEND_URL
         sync: false
       - key: REACT_PREVIEW_STORAGE

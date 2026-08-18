@@ -19,7 +19,7 @@ export interface FullStackBlueprint {
     method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
     path: string;
     description: string;
-    requestBody?: Record<string, string>;
+    requestBody: Array<{ name: string; type: string; required: boolean }>;
     responseShape: string;
   }>;
 }
@@ -82,11 +82,11 @@ export class Website {
   @Column({ nullable: true })
   generatedPath?: string;
 
-  /** Shared contract used by Claude for the API and v0 for the UI. */
+  /** Shared contract used by OpenAI for the API and v0 for the UI. */
   @Column({ type: 'json', nullable: true })
   fullStackBlueprint?: FullStackBlueprint;
 
-  /** Plain Node.js/Express files generated separately by Claude. */
+  /** Plain Node.js/Express files generated separately by OpenAI. */
   @Column({ type: 'json', nullable: true })
   backendFiles?: GeneratedProjectFile[];
 

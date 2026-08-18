@@ -18,8 +18,8 @@ Do not put secrets directly into `render.yaml`.
 | --- | --- |
 | `MONGODB_URI` | MongoDB Atlas connection string |
 | `V0_API_KEY` | React frontend generation |
-| `ANTHROPIC_API_KEY` | Blueprint and Express backend generation |
-| `CLAUDE_MODEL` | Claude model available to the Anthropic account |
+| `OPENAI_API_KEY` | Blueprint and Express backend generation through the OpenAI Responses API |
+| `OPENAI_BACKEND_MODEL` | OpenAI model used for backend generation; defaults to `gpt-4.1-mini` |
 | `FRONTEND_URL` | Allowed UI/R2 origins, comma-separated when there is more than one |
 | `R2_ACCOUNT_ID` | Cloudflare account identifier |
 | `R2_BUCKET` | Preview artifact bucket |
@@ -31,11 +31,14 @@ Do not put secrets directly into `render.yaml`.
 
 ## Frontend configuration
 
-Build the main WebGenius frontend with:
+For local development, keep the normal WebGenius API local and send only full-stack generation/runtime calls to Render:
 
 ```env
-VITE_API_URL=https://<service>.onrender.com
+VITE_API_URL=http://localhost:3000
+VITE_BACKEND_GENERATOR_URL=https://<service>.onrender.com
 ```
+
+The local backend and Render backend must use the same `JWT_SECRET` and `MONGODB_URI`. The shared JWT secret lets Render validate tokens issued by the local backend, and the shared database makes generated projects visible to both services.
 
 Generated React artifacts receive a project-specific API base during the R2 build. Calls are routed to:
 
