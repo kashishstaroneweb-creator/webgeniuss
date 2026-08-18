@@ -193,6 +193,9 @@ export class BackendRuntimeService implements OnModuleInit, OnModuleDestroy {
     const keep = ['PATH', 'Path', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'HOME'];
     const env: NodeJS.ProcessEnv = { NODE_ENV: 'production', PORT: String(port) };
     for (const key of keep) if (process.env[key]) env[key] = process.env[key];
+    if (process.env.FULLSTACK_SHARED_DEPENDENCIES === '1') {
+      env.NODE_PATH = path.resolve(process.cwd(), 'node_modules');
+    }
     return env;
   }
 

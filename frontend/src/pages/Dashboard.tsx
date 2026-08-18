@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useAuthStore } from '@/store/authStore';
 import { useSidebarStore } from '@/store/sidebarStore';
 import api from '@/lib/api';
+import { BACKEND_GENERATOR_URL } from '@/lib/backendGeneratorApi';
 import Button from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Sparkles, Send, Eye, Code, Monitor, Download, Paperclip, Wand2, Mic, RotateCw, Smartphone, FileText, Image, X, MessageSquare } from 'lucide-react';
@@ -14,6 +15,7 @@ import { StatsCards } from '@/components/StatsCards';
 import { RecentProjects } from '@/components/RecentProjects';
 import { VoiceVisualizer } from '@/components/VoiceVisualizer';
 import { MobilePreviewStudio } from '@/components/MobilePreviewStudio';
+import { FullStackCodeWorkspace } from '@/components/FullStackCodeWorkspace';
 import { useVoiceRecognition } from '@/lib/useVoiceRecognition';
 import { useVoiceSynthesis } from '@/lib/useVoiceSynthesis';
 import { useTypewriter } from '@/lib/useTypewriter';
@@ -118,6 +120,11 @@ interface GeneratedWebsite {
   reactArtifactUrl?: string;
   reactBuildStatus?: 'queued' | 'building' | 'ready' | 'failed';
   reactBuildLog?: string;
+  fullStackBlueprint?: unknown;
+  backendFiles?: Array<{ path: string; content: string }>;
+  backendStatus?: 'generated' | 'installing' | 'running' | 'stopped' | 'failed';
+  backendLogs?: string;
+  backendPreviewUrl?: string;
   templateId?: string;
   templateName?: string;
   /** Last sync edit: v0-clone thread continuation vs legacy full-site create. */
@@ -137,6 +144,7 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(false);
   const [websiteName, setWebsiteName] = useState('');
   const [framework, setFramework] = useState<WebsiteFramework>('next');
+  const [fullStackMode, setFullStackMode] = useState(false);
   const [generatedWebsite, setGeneratedWebsite] = useState<GeneratedWebsite | null>(null);
   const [showCodeView, setShowCodeView] = useState(false);
   const [previewDevice, setPreviewDevice] = useState<PreviewDevice>('desktop');
@@ -191,6 +199,17 @@ const Dashboard = () => {
   };
 
   const showSplitView = isGenerating || loadingHistoryWebsite || generatedWebsite !== null;
+
+  const applyGeneratedWebsite = (saved: GeneratedWebsite) => {
+    voice.speak(saved.backendFiles?.length ? 'Your full-stack application is ready.' : 'Your website is ready.');
+    setGeneratedWebsite(saved);
+    setPromptAttachments([]);
+    setFramework(inferFrameworkFromWebsite(saved));
+    setFullStackMode(!!saved.backendFiles?.length);
+    if (saved.id) syncWebsiteIdToUrl(saved.id);
+    void refreshCurrentUser();
+    setCollapsed(true);
+  };
 
   const refreshCurrentUser = async () => {
     try {
@@ -350,6 +369,7 @@ const Dashboard = () => {
       setEditLoading(false);
       setActiveTab('component-0');
       setActiveComponentIndex(0);
+      setFullStackMode(false);
     }
   }, [websiteIdFromUrl]);
 
@@ -381,6 +401,11 @@ const Dashboard = () => {
           reactArtifactUrl: data.reactArtifactUrl,
           reactBuildStatus: data.reactBuildStatus,
           reactBuildLog: data.reactBuildLog,
+          fullStackBlueprint: data.fullStackBlueprint,
+          backendFiles: data.backendFiles,
+          backendStatus: data.backendStatus,
+          backendLogs: data.backendLogs,
+          backendPreviewUrl: data.backendPreviewUrl,
           templateId: data.templateId,
           templateName: data.templateName,
           createdAt: data.createdAt,
@@ -388,6 +413,7 @@ const Dashboard = () => {
         setPrompt(data.prompt || '');
         setWebsiteName(data.websiteName || '');
         setFramework(inferFrameworkFromWebsite(data));
+        setFullStackMode(!!data.backendFiles?.length);
         setCollapsed(true);
       } catch (err) {
         if (!cancelled) console.error('Failed to load website from history:', err);
@@ -580,6 +606,26 @@ const Dashboard = () => {
       const currentUserId = (user as any)?.id ?? (user as any)?._id;
       const websiteNameFinal = websiteName || `Website ${Date.now()}`;
 
+      if (fullStackMode) {
+        const response = await fetch(`${BACKEND_GENERATOR_URL}/fullstack/generate`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ userId: currentUserId, prompt: promptForRequest, websiteName: websiteNameFinal }),
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const error = new Error(body.message || `Full-stack generation failed (${response.status})`);
+          (error as any).status = response.status;
+          (error as any).errorData = body;
+          throw error;
+        }
+        const saved = body as GeneratedWebsite;
+        applyGeneratedWebsite(saved);
+        return;
+      }
+
       const streamRes = await fetch(`${STREAM_API_BASE}/website/generate-stream`, {
         method: 'POST',
         headers: {
@@ -661,8 +707,6 @@ const Dashboard = () => {
 
       console.log('Website generated successfully!', saved);
       
-      voice.speak("Your website is ready.");
-      
       console.log('Code lengths:', {
         html: saved.htmlCode?.length || 0,
         css: saved.cssCode?.length || 0,
@@ -671,14 +715,7 @@ const Dashboard = () => {
         components: saved.components?.length ?? 0,
       });
 
-      setGeneratedWebsite(saved);
-      setPromptAttachments([]);
-      setFramework(inferFrameworkFromWebsite(saved));
-      if (saved.id) syncWebsiteIdToUrl(saved.id);
-      void refreshCurrentUser();
-      // Keep prompt and websiteName visible on the left for "generate again"
-      // Automatically collapse sidebar when website is generated
-      setCollapsed(true);
+      applyGeneratedWebsite(saved);
     } catch (error: any) {
       const errorMessage = error.response?.data?.message || error.message || 'Failed to generate website';
       const status = error.response?.status || error.status;
@@ -727,7 +764,7 @@ const Dashboard = () => {
       alert('You are not authenticated. Please login again.');
       window.location.href = '/login';
       setEditLoading(false);
-      return;
+      return;``
     }
 
     const websiteId = generatedWebsite.id;
@@ -953,6 +990,8 @@ const Dashboard = () => {
                 onGenerate={handleGenerate}
                 framework={framework}
                 setFramework={setFramework}
+                fullStackMode={fullStackMode}
+                setFullStackMode={setFullStackMode}
                 attachments={promptAttachments}
                 onAttachFiles={handlePromptAttachFiles}
                 onRemoveAttachment={(id) =>
@@ -1517,6 +1556,12 @@ const Dashboard = () => {
                     {showCodeView ? (
                       // Code View - Component-based or Legacy
                       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+                        <FullStackCodeWorkspace
+                          project={generatedWebsite}
+                          onProjectUpdate={(updates) =>
+                            setGeneratedWebsite((current) => current ? { ...current, ...updates } : current)
+                          }
+                        >
                         {generatedWebsite.components && generatedWebsite.components.length > 0 ? (
                           // Component-based tabs
                           <>
@@ -1914,6 +1959,7 @@ const Dashboard = () => {
                         </div>
                           </>
                         )}
+                        </FullStackCodeWorkspace>
                       </div>
                     ) : (
                       <div className="flex-1 overflow-hidden h-full flex flex-col min-h-0 min-w-0">

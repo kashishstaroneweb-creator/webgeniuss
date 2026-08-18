@@ -1,9 +1,9 @@
 import { BadGatewayException, Injectable } from '@nestjs/common';
-import { ClaudeFullStackPlan, MergedFullStackProject } from './fullstack.types';
+import { FullStackPlan, MergedFullStackProject } from './fullstack.types';
 
 @Injectable()
 export class ProjectMergerService {
-  merge(plan: ClaudeFullStackPlan, frontendPrompt: string): MergedFullStackProject {
+  merge(plan: FullStackPlan, frontendPrompt: string): MergedFullStackProject {
     const endpointKeys = new Set<string>();
     for (const endpoint of plan.blueprint.api) {
       if (!endpoint.path?.startsWith('/api/')) {

@@ -13,7 +13,7 @@ describe('BlueprintPromptService', () => {
           method: 'POST',
           path: '/api/tasks',
           description: 'Create a task',
-          requestBody: { title: 'string' },
+          requestBody: [{ name: 'title', type: 'string', required: true }],
           responseShape: 'Task',
         },
       ],
