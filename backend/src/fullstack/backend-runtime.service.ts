@@ -48,7 +48,14 @@ export class BackendRuntimeService implements OnModuleInit, OnModuleDestroy {
     website.backendFiles = backendFiles;
     website.backendStatus = 'generated';
     const persisted = await this.websites.save(website);
-    return this.start(persisted.id.toString(), persisted.userId);
+    const persistedId = persisted.id.toString();
+    const existing = this.starting.get(persistedId);
+    if (existing) return existing;
+    const operation = this.startInternal(persistedId, persisted.userId, persisted).finally(() =>
+      this.starting.delete(persistedId),
+    );
+    this.starting.set(persistedId, operation);
+    return operation;
   }
 
   async start(websiteId: string, userId: string): Promise<Website> {
@@ -59,8 +66,8 @@ export class BackendRuntimeService implements OnModuleInit, OnModuleDestroy {
     return operation;
   }
 
-  private async startInternal(websiteId: string, userId: string): Promise<Website> {
-    const website = await this.findOwned(websiteId, userId);
+  private async startInternal(websiteId: string, userId: string, persistedWebsite?: Website): Promise<Website> {
+    const website = persistedWebsite || (await this.findOwned(websiteId, userId));
     const active = this.running.get(websiteId);
     if (active && !active.child.killed) return website;
     if (!website.backendFiles?.length) throw new BadRequestException('This project has no generated backend');
