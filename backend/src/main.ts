@@ -15,7 +15,10 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bodyParser: false });
   
   // Enable CORS
-  const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:5173')
+  const configuredOrigins = [process.env.FRONTEND_URL || 'http://localhost:5173'];
+  if (process.env.R2_PUBLIC_BASE_URL) configuredOrigins.push(process.env.R2_PUBLIC_BASE_URL);
+  const allowedOrigins = configuredOrigins
+    .join(',')
     .split(',')
     .map((origin) => origin.trim().replace(/\/+$/, ''))
     .filter(Boolean);
