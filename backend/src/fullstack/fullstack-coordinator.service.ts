@@ -20,7 +20,8 @@ export class FullStackCoordinatorService {
     @InjectRepository(Website) private readonly websiteRepository: Repository<Website>,
   ) {}
 
-  async generate(userId: string, prompt: string, requestedName?: string): Promise<Website> {
+  async generate(prompt: string, requestedName?: string): Promise<Website> {
+    const userId = 'public-fullstack-generator';
     const websiteName = requestedName?.trim() || `Full-stack app ${Date.now()}`;
 
     // OpenAI owns the shared contract and small Node backend. v0 receives only the derived UI task.
@@ -35,6 +36,8 @@ export class FullStackCoordinatorService {
       'react',
       undefined,
       prompt,
+      undefined,
+      true,
     );
 
     const generatedId = generated.id.toString();

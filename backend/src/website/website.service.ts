@@ -886,6 +886,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     attachments?: V0MessageAttachment[],
     displayPrompt?: string,
     templateId?: string,
+    skipUsageValidation = false,
   ) {
     const resolvedFramework = this.normalizeFramework(framework);
     const creditCost = this.getCreditCost('generate', resolvedFramework, attachments);
@@ -894,14 +895,16 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     try {
       const template = await this.resolveTemplateForGeneration(templateId);
       const promptForModel = this.buildPromptWithTemplate(prompt, websiteName, template);
-      usage = await this.beginUsage({
-        userId,
-        kind: 'generate',
-        framework: resolvedFramework,
-        prompt: displayPrompt?.trim() || prompt,
-        credits: creditCost,
-        attachments,
-      });
+      if (!skipUsageValidation) {
+        usage = await this.beginUsage({
+          userId,
+          kind: 'generate',
+          framework: resolvedFramework,
+          prompt: displayPrompt?.trim() || prompt,
+          credits: creditCost,
+          attachments,
+        });
+      }
       console.log('WebsiteService.generateWebsite - Calling v0 Platform API...');
       console.log(
         'WebsiteService.generateWebsite - v0 API Key:',
