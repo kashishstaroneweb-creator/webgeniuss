@@ -612,7 +612,7 @@ const Dashboard = () => {
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ userId: currentUserId, prompt: promptForRequest, websiteName: websiteNameFinal }),
+          body: JSON.stringify({ prompt: promptForRequest, websiteName: websiteNameFinal }),
         });
         const body = await response.json().catch(() => ({}));
         if (!response.ok) {
@@ -764,7 +764,7 @@ const Dashboard = () => {
       alert('You are not authenticated. Please login again.');
       window.location.href = '/login';
       setEditLoading(false);
-      return;``
+      return;
     }
 
     const websiteId = generatedWebsite.id;

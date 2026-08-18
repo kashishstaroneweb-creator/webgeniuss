@@ -8,6 +8,6 @@ export class FullStackController {
 
   @Post('generate')
   generate(@Body() dto: GenerateFullStackDto) {
-    return this.coordinator.generate(dto.userId, dto.prompt, dto.websiteName);
+    return this.coordinator.generate(dto.prompt, dto.websiteName);
   }
 }
