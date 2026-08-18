@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ObjectId } from 'mongodb';
@@ -19,6 +19,15 @@ export class FullStackCoordinatorService {
     private readonly backendRuntime: BackendRuntimeService,
     @InjectRepository(Website) private readonly websiteRepository: Repository<Website>,
   ) {}
+
+  async getProject(websiteId: string): Promise<Website> {
+    if (!ObjectId.isValid(websiteId)) throw new NotFoundException('Generated project not found');
+    const website = await this.websiteRepository.findOne({
+      where: { _id: new ObjectId(websiteId), userId: 'public-fullstack-generator' } as any,
+    });
+    if (!website) throw new NotFoundException('Generated project not found');
+    return website;
+  }
 
   async generate(prompt: string, requestedName?: string): Promise<Website> {
     const userId = 'public-fullstack-generator';
