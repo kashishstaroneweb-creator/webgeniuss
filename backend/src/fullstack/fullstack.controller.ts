@@ -27,8 +27,8 @@ export class FullStackController {
       dto.prompt,
       dto.websiteName?.trim() || `Backend ${Date.now()}`,
     );
-    const runtimeId = new ObjectId().toString();
-    const runtime = await this.backendRuntime.deploy(runtimeId, plan.backendFiles);
+    const runtime = await this.backendRuntime.deploy(new ObjectId().toString(), plan.backendFiles);
+    const runtimeId = runtime.id.toString();
     return {
       ...plan,
       runtimeId,
