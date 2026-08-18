@@ -382,7 +382,14 @@ const Dashboard = () => {
     const loadHistoryWebsite = async () => {
       setLoadingHistoryWebsite(true);
       try {
-        const res = await api.get(`/website/${websiteIdFromUrl}`);
+        let res;
+        try {
+          res = await api.get(`/website/${websiteIdFromUrl}`);
+        } catch {
+          const publicResponse = await fetch(`${BACKEND_GENERATOR_URL}/fullstack/${websiteIdFromUrl}/project`);
+          if (!publicResponse.ok) throw new Error(`Website lookup failed (${publicResponse.status})`);
+          res = { data: await publicResponse.json() };
+        }
         if (cancelled) return;
         const data = res.data;
         setGeneratedWebsite({
@@ -465,7 +472,15 @@ const Dashboard = () => {
 
     const poll = async () => {
       try {
-        const res = await api.get(`/website/${websiteId}`);
+        const isFullStackProject = !!generatedWebsite.backendFiles?.length;
+        const res = isFullStackProject
+          ? {
+              data: await fetch(`${BACKEND_GENERATOR_URL}/fullstack/${websiteId}/project`).then(async (response) => {
+                if (!response.ok) throw new Error(`Full-stack project lookup failed (${response.status})`);
+                return response.json();
+              }),
+            }
+          : await api.get(`/website/${websiteId}`);
         if (cancelled) return;
         const data = res.data;
         console.log('[PreviewArtifactPoll] status tick:', {
@@ -493,7 +508,12 @@ const Dashboard = () => {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [generatedWebsite?.id, generatedWebsite?.framework, generatedWebsite?.reactBuildStatus]);
+  }, [
+    generatedWebsite?.id,
+    generatedWebsite?.framework,
+    generatedWebsite?.reactBuildStatus,
+    generatedWebsite?.backendFiles?.length,
+  ]);
 
   // Format JSON code with proper indentation
   const formatJson = (jsonString: string): string => {
