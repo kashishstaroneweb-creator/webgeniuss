@@ -47,8 +47,8 @@ export class BackendRuntimeService implements OnModuleInit, OnModuleDestroy {
     }
     website.backendFiles = backendFiles;
     website.backendStatus = 'generated';
-    await this.websites.save(website);
-    return this.start(websiteId, website.userId);
+    const persisted = await this.websites.save(website);
+    return this.start(persisted.id.toString(), persisted.userId);
   }
 
   async start(websiteId: string, userId: string): Promise<Website> {
