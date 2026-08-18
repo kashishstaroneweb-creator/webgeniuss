@@ -8,6 +8,27 @@ export class OpenAIBackendService {
   private readonly allowedDependencies = new Set(['express', 'cors', 'dotenv']);
 
   async generate(prompt: string, projectName: string): Promise<FullStackPlan> {
+    const generatorUrl = process.env.RENDER === 'true'
+      ? ''
+      : process.env.BACKEND_GENERATOR_URL?.trim().replace(/\/+$/, '');
+    if (generatorUrl) {
+      try {
+        const response = await axios.post(
+          `${generatorUrl}/fullstack/backend-plan`,
+          { prompt, websiteName: projectName },
+          { timeout: Number(process.env.OPENAI_TIMEOUT_MS) || 180_000 },
+        );
+        this.validate(response.data);
+        return response.data;
+      } catch (error: any) {
+        const message = error?.response?.data?.message || error?.message || 'Render backend generator failed';
+        throw new BadGatewayException(`Remote backend generation failed: ${message}`);
+      }
+    }
+    return this.generateDirect(prompt, projectName);
+  }
+
+  async generateDirect(prompt: string, projectName: string): Promise<FullStackPlan> {
     const apiKey = process.env.OPENAI_API_KEY?.trim();
     if (!apiKey) throw new ServiceUnavailableException('OPENAI_API_KEY is not configured');
 

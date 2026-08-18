@@ -3,7 +3,6 @@ import { useSearchParams } from 'react-router-dom';
 import { useAuthStore } from '@/store/authStore';
 import { useSidebarStore } from '@/store/sidebarStore';
 import api from '@/lib/api';
-import { BACKEND_GENERATOR_URL } from '@/lib/backendGeneratorApi';
 import Button from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Sparkles, Send, Eye, Code, Monitor, Download, Paperclip, Wand2, Mic, RotateCw, Smartphone, FileText, Image, X, MessageSquare } from 'lucide-react';
@@ -382,14 +381,7 @@ const Dashboard = () => {
     const loadHistoryWebsite = async () => {
       setLoadingHistoryWebsite(true);
       try {
-        let res;
-        try {
-          res = await api.get(`/website/${websiteIdFromUrl}`);
-        } catch {
-          const publicResponse = await fetch(`${BACKEND_GENERATOR_URL}/fullstack/${websiteIdFromUrl}/project`);
-          if (!publicResponse.ok) throw new Error(`Website lookup failed (${publicResponse.status})`);
-          res = { data: await publicResponse.json() };
-        }
+        const res = await api.get(`/website/${websiteIdFromUrl}`);
         if (cancelled) return;
         const data = res.data;
         setGeneratedWebsite({
@@ -472,15 +464,7 @@ const Dashboard = () => {
 
     const poll = async () => {
       try {
-        const isFullStackProject = !!generatedWebsite.backendFiles?.length;
-        const res = isFullStackProject
-          ? {
-              data: await fetch(`${BACKEND_GENERATOR_URL}/fullstack/${websiteId}/project`).then(async (response) => {
-                if (!response.ok) throw new Error(`Full-stack project lookup failed (${response.status})`);
-                return response.json();
-              }),
-            }
-          : await api.get(`/website/${websiteId}`);
+        const res = await api.get(`/website/${websiteId}`);
         if (cancelled) return;
         const data = res.data;
         console.log('[PreviewArtifactPoll] status tick:', {
@@ -508,12 +492,7 @@ const Dashboard = () => {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [
-    generatedWebsite?.id,
-    generatedWebsite?.framework,
-    generatedWebsite?.reactBuildStatus,
-    generatedWebsite?.backendFiles?.length,
-  ]);
+  }, [generatedWebsite?.id, generatedWebsite?.framework, generatedWebsite?.reactBuildStatus]);
 
   // Format JSON code with proper indentation
   const formatJson = (jsonString: string): string => {
@@ -627,10 +606,11 @@ const Dashboard = () => {
       const websiteNameFinal = websiteName || `Website ${Date.now()}`;
 
       if (fullStackMode) {
-        const response = await fetch(`${BACKEND_GENERATOR_URL}/fullstack/generate`, {
+        const response = await fetch(`${STREAM_API_BASE}/fullstack/generate`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify({ prompt: promptForRequest, websiteName: websiteNameFinal }),
         });

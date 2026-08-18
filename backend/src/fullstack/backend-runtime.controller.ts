@@ -34,11 +34,19 @@ export class BackendRuntimeController {
   /** Public preview gateway. Only forwards to an already-started generated backend. */
   @All('runtime/:id/api/*')
   async proxy(@Param('id') id: string, @Req() req: Request, @Res() res: Response) {
-    const runtime = this.runtimes.getRuntime(id);
+    let runtime = this.runtimes.getRuntime(id);
     if (!runtime) {
-      return res.status(HttpStatus.SERVICE_UNAVAILABLE).json({
-        message: 'Backend preview is stopped. Start it from the WebGenius preview first.',
-      });
+      try {
+        await this.runtimes.start(id, 'render-runtime');
+        runtime = this.runtimes.getRuntime(id);
+      } catch (error: any) {
+        return res.status(HttpStatus.SERVICE_UNAVAILABLE).json({
+          message: error?.message || 'Generated backend could not be started',
+        });
+      }
+    }
+    if (!runtime) {
+      return res.status(HttpStatus.SERVICE_UNAVAILABLE).json({ message: 'Generated backend is unavailable' });
     }
     const suffix = String((req.params as any)[0] || '');
     try {

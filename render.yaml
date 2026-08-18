@@ -25,7 +25,7 @@ services:
         value: gpt-4.1-mini
       - key: FRONTEND_URL
         sync: false
-      - key: REACT_PREVIEW_STORAGE
+      - key: REACT_PREVIEW_STORAGE_MODE
         value: r2
       - key: R2_ACCOUNT_ID
         sync: false

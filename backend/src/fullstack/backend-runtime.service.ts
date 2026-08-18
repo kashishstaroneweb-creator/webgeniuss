@@ -33,6 +33,24 @@ export class BackendRuntimeService implements OnModuleInit, OnModuleDestroy {
     this.idleTimer.unref();
   }
 
+  async deploy(websiteId: string, backendFiles: Array<{ path: string; content: string }>): Promise<Website> {
+    if (!ObjectId.isValid(websiteId)) throw new BadRequestException('Invalid generated project ID');
+    if (!backendFiles.length) throw new BadRequestException('Generated backend files are required');
+    let website = await this.websites.findOne({ where: { _id: new ObjectId(websiteId) } as any });
+    if (!website) {
+      website = this.websites.create();
+      website.id = new ObjectId(websiteId);
+      website.userId = 'render-runtime';
+      website.websiteName = `Runtime ${websiteId}`;
+      website.framework = 'react';
+      website.prompt = 'Runtime mirror for a locally generated full-stack project';
+    }
+    website.backendFiles = backendFiles;
+    website.backendStatus = 'generated';
+    await this.websites.save(website);
+    return this.start(websiteId, website.userId);
+  }
+
   async start(websiteId: string, userId: string): Promise<Website> {
     const existing = this.starting.get(websiteId);
     if (existing) return existing;
