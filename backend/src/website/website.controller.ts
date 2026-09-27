@@ -1,4 +1,5 @@
-import { Controller, Post, Get, Delete, Body, Param, Query, UseGuards, HttpException, HttpStatus, Res } from '@nestjs/common';
+import { Controller, Post, Patch, Get, Delete, Body, Param, Query, UseGuards, HttpException, HttpStatus, Res } from '@nestjs/common';
+import { RenameWebsiteDto } from './dto/rename-website.dto';
 import { Response } from 'express';
 import { WebsiteService } from './website.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -283,6 +284,12 @@ export class WebsiteController {
         { cause: error },
       );
     }
+  }
+
+  @Patch(':id')
+  @UseGuards(JwtAuthGuard)
+  async renameWebsite(@CurrentUser() user: any, @Param('id') id: string, @Body() dto: RenameWebsiteDto) {
+    return this.websiteService.renameWebsite(id, this.userIdFromRequest(user), dto.websiteName);
   }
 
   @Delete(':id')

@@ -1,10 +1,12 @@
 import { BadGatewayException, Injectable, ServiceUnavailableException } from '@nestjs/common';
 import axios from 'axios';
 import { FullStackPlan } from './fullstack.types';
+import { GENERATED_AUTH_SOURCE, GENERATED_SERVER_SOURCE } from './generated-auth.template';
+import { addAuthenticationContract } from './generated-auth.contract';
 
 @Injectable()
 export class OpenAIBackendService {
-  private readonly allowedFiles = new Set(['server.js', 'package.json', 'data.json', '.env.example']);
+  private readonly allowedFiles = new Set(['routes.js', 'package.json', 'data.json', '.env.example']);
   private readonly allowedDependencies = new Set(['express', 'cors', 'dotenv']);
 
   async generate(prompt: string, projectName: string): Promise<FullStackPlan> {
@@ -18,7 +20,7 @@ export class OpenAIBackendService {
           { prompt, websiteName: projectName },
           { timeout: Number(process.env.OPENAI_TIMEOUT_MS) || 180_000 },
         );
-        this.validate(response.data);
+        this.validate(response.data, true);
         return response.data;
       } catch (error: any) {
         const message = error?.response?.data?.message || error?.message || 'Render backend generator failed';
@@ -68,6 +70,8 @@ export class OpenAIBackendService {
     const text = this.outputText(response.data);
     const plan = this.parseJson(text);
     this.validate(plan);
+    plan.backendFiles.push({ path: 'server.js', content: GENERATED_SERVER_SOURCE }, { path: 'auth.js', content: GENERATED_AUTH_SOURCE });
+    addAuthenticationContract(plan);
     return plan;
   }
 
@@ -89,8 +93,8 @@ export class OpenAIBackendService {
     }
   }
 
-  private validate(plan: FullStackPlan): void {
-    if (!plan?.blueprint || !Array.isArray(plan.blueprint.api) || !Array.isArray(plan.backendFiles)) {
+  private validate(plan: FullStackPlan, assembled = false): void {
+    if (!plan?.blueprint || !Array.isArray(plan.blueprint.api) || !Array.isArray(plan.blueprint.features) || !Array.isArray(plan.backendFiles)) {
       throw new BadGatewayException('OpenAI response is missing blueprint or backend files');
     }
     const paths = new Set<string>();
@@ -99,18 +103,38 @@ export class OpenAIBackendService {
         throw new BadGatewayException('OpenAI returned an invalid backend file');
       }
       const normalized = file.path.replace(/\\/g, '/').replace(/^\.\//, '');
-      if (!this.allowedFiles.has(normalized) || normalized.includes('..')) {
+      const trustedFile = assembled && (normalized === 'server.js' || normalized === 'auth.js');
+      if ((!this.allowedFiles.has(normalized) && !trustedFile) || normalized.includes('..')) {
         throw new BadGatewayException(`Backend file is not allowed: ${file.path}`);
       }
       if (file.content.length > 100_000) throw new BadGatewayException(`Backend file is too large: ${file.path}`);
       file.path = normalized;
+      if (paths.has(normalized)) throw new BadGatewayException(`Duplicate backend file: ${normalized}`);
       paths.add(normalized);
     }
-    if (!paths.has('server.js') || !paths.has('package.json') || !paths.has('data.json')) {
-      throw new BadGatewayException('Backend must include server.js, package.json, and data.json');
+    if (!paths.has('routes.js') || !paths.has('package.json') || !paths.has('data.json')) {
+      if (assembled && paths.has('server.js') && !paths.has('routes.js')) {
+        throw new BadGatewayException(
+          'Remote generator uses the old backend format (server.js without routes.js). ' +
+          'Redeploy the service configured by BACKEND_GENERATOR_URL with the current WebGenius backend code, then retry. ' +
+          'For local generation, clear BACKEND_GENERATOR_URL, configure OPENAI_API_KEY locally, and restart the backend.',
+        );
+      }
+      throw new BadGatewayException('Backend must include routes.js, package.json, and data.json');
     }
 
-    const serverFile = plan.backendFiles.find((file) => file.path === 'server.js')!;
+    if (assembled) {
+      if (plan.backendFiles.find((file) => file.path === 'server.js')?.content !== GENERATED_SERVER_SOURCE ||
+          plan.backendFiles.find((file) => file.path === 'auth.js')?.content !== GENERATED_AUTH_SOURCE) {
+        throw new BadGatewayException('Remote generator authentication version differs. Update both WebGenius services.');
+      }
+      addAuthenticationContract(plan);
+    }
+
+    const serverFile = plan.backendFiles.find((file) => file.path === 'routes.js')!;
+    if (!/module\.exports\s*=/.test(serverFile.content) || /\.listen\s*\(/.test(serverFile.content) || /auth-data\.json/.test(serverFile.content)) {
+      throw new BadGatewayException('Generated routes must export a registration function without starting a server or accessing auth storage');
+    }
     const forbiddenServerPatterns: Array<[RegExp, string]> = [
       [/\bchild_process\b/, 'child_process'],
       [/\bworker_threads\b/, 'worker_threads'],
@@ -133,7 +157,8 @@ export class OpenAIBackendService {
     const dependencies = Object.keys(packageJson.dependencies || {});
     const disallowed = dependencies.filter((name) => !this.allowedDependencies.has(name));
     if (disallowed.length) throw new BadGatewayException(`Backend dependencies are not allowed: ${disallowed.join(', ')}`);
-    const safeDependencies = Object.fromEntries(dependencies.map((name) => [name, String(packageJson.dependencies[name])]));
+    // Known registry versions only; a model must not supply URLs, local paths or install scripts.
+    const safeDependencies = { express: '4.21.2', cors: '2.8.5', dotenv: '16.6.1' };
     packageFile.content = JSON.stringify(
       {
         name: String(packageJson.name || 'webgenius-generated-backend').replace(/[^a-z0-9-_]/gi, '-').toLowerCase(),
@@ -219,12 +244,17 @@ export class OpenAIBackendService {
 Create the shared API blueprint and a complete plain Node.js backend matching it exactly.
 
 Backend rules:
-- Plain JavaScript, Node.js and Express only. No TypeScript, ORM, database, authentication, Docker, tests, build step, or frontend files.
+- Plain JavaScript, Node.js and Express only. No TypeScript, ORM, database, Docker, tests, build step, or frontend files.
 - The only allowed dependencies are express, cors and dotenv.
-- Return exactly server.js, package.json, data.json and optionally .env.example.
+- Return exactly routes.js, package.json, data.json and optionally .env.example. Use CommonJS.
+- routes.js MUST export function registerRoutes(app) via module.exports. Register application routes on that app. Do NOT create an Express app or call listen; WebGenius supplies server.js.
+- WebGenius supplies tested signup/login/session authentication in auth.js. Do NOT implement authentication or define /api/auth or /api/health endpoints yourself.
+- All application endpoints require a Bearer session token. req.user contains { id, email, name } from trusted middleware. Never accept identity or ownership from request bodies.
+- For user-owned records, persist userId from req.user.id, filter all reads by it, and check ownership before updates/deletes. Return 404 for records owned by others.
+- Do not include passwords, salts, tokens, sessions, or auth users in data.json, the dataModels or application API responses. Do not read/write auth-data.json. Do not serve static directories.
 - Persist CRUD data in data.json using fs/promises. Use safe sequential writes and create the file if missing.
-- Read PORT from process.env and default to 4000. Listen on 0.0.0.0.
-- Include GET /api/health returning { ok: true }.
+- WebGenius supplies the server listener and PORT configuration; routes.js must not start a listener.
+- The host supplies GET /api/health returning { ok: true } and /api/auth/signup, /api/auth/login, /api/auth/me, /api/auth/logout. These are added to the blueprint automatically.
 - Every application endpoint must begin with /api and exactly match the blueprint.
 - Use an empty requestBody array for endpoints without a body.
 - Validate required request fields and return useful JSON errors and HTTP status codes.

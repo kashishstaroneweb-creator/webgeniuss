@@ -57,8 +57,12 @@ export class BackendRuntimeController {
         data: ['GET', 'HEAD'].includes(req.method) ? undefined : req.body,
         timeout: Number(process.env.FULLSTACK_PROXY_TIMEOUT_MS) || 15_000,
         validateStatus: () => true,
-        headers: { 'content-type': req.get('content-type') || 'application/json' },
+        headers: {
+          'content-type': req.get('content-type') || 'application/json',
+          ...(req.get('authorization') ? { authorization: req.get('authorization') } : {}),
+        },
       });
+      res.set('Cache-Control', 'no-store');
       return res.status(upstream.status).set('content-type', upstream.headers['content-type'] || 'application/json').send(upstream.data);
     } catch (error: any) {
       return res.status(HttpStatus.BAD_GATEWAY).json({ message: error?.message || 'Generated backend is unavailable' });

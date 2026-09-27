@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import api from '@/lib/api';
+import { ProjectDialog } from '@/components/ProjectDialog';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import Button from '@/components/ui/Button';
 import { History as HistoryIcon, Clock, Trash2, Code, Monitor, ChevronDown, ChevronUp, Eye } from 'lucide-react';
@@ -26,6 +27,7 @@ interface ViteConfig {
 interface Website {
   id: string;
   userId?: string;
+  framework?: 'next' | 'react' | 'html';
   websiteName: string;
   prompt: string;
   htmlCode?: string;
@@ -49,30 +51,65 @@ const History = () => {
   const [activeComponentIndex, setActiveComponentIndex] = useState<Record<string, number>>({});
   const [previewWebsite, setPreviewWebsite] = useState<Website | null>(null);
 
+  const [search, setSearch] = useState('');
+  const [frameworkFilter, setFrameworkFilter] = useState('all');
+  const [dateFilter, setDateFilter] = useState('all');
+  const [sort, setSort] = useState('newest');
+  const [loadError, setLoadError] = useState('');
+  const [actionError, setActionError] = useState('');
+  const [dialog, setDialog] = useState<{ kind: 'rename' | 'delete'; website: Website } | null>(null);
+  const [name, setName] = useState('');
+  const [saving, setSaving] = useState(false);
+  const visibleWebsites = websites.filter((site) => {
+    const query = search.trim().toLowerCase();
+    const framework = site.framework || (site.components?.length ? 'react' : 'html');
+    return (!query || `${site.websiteName} ${site.prompt || ''}`.toLowerCase().includes(query))
+      && (frameworkFilter === 'all' || frameworkFilter === framework)
+      && (dateFilter === 'all' || Date.now() - new Date(site.createdAt).getTime() <= Number(dateFilter) * 86400000);
+  }).sort((a, b) => sort === 'name' ? a.websiteName.localeCompare(b.websiteName)
+    : (new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()) * (sort === 'oldest' ? -1 : 1));
+
+  const handleRename = async () => {
+    if (!dialog || !name.trim() || saving) return;
+    setSaving(true);
+    setActionError('');
+    try {
+      const { data } = await api.patch<{ id: string; websiteName: string }>(`/website/${dialog.website.id}`, { websiteName: name.trim() });
+      setWebsites((current) => current.map((site) => site.id === data.id ? { ...site, websiteName: data.websiteName } : site));
+      setPreviewWebsite((current) => current && current.id === data.id ? { ...current, websiteName: data.websiteName } : current);
+      setDialog(null);
+    } catch {
+      setActionError('Could not rename this project. Please try again.');
+    } finally { setSaving(false); }
+  };
+
   useEffect(() => {
     fetchWebsites();
   }, []);
 
   const fetchWebsites = async () => {
+    setLoading(true);
+    setLoadError('');
     try {
       const response = await api.get('/website/list');
       setWebsites(response.data);
     } catch (error) {
-      console.error('Failed to fetch websites:', error);
+      setLoadError('Could not load your projects. Please try again.');
     } finally {
       setLoading(false);
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this website? This action cannot be undone.')) {
-      return;
-    }
+    if (deleting) return;
+    setActionError('');
 
     setDeleting(id);
     try {
       await api.delete(`/website/${id}`);
-      setWebsites(websites.filter((w) => w.id !== id));
+      setWebsites((current) => current.filter((w) => w.id !== id));
+      setPreviewWebsite((current) => current?.id === id ? null : current);
+      setDialog(null);
       // Clean up state
       const newExpanded = new Set(expandedPreviews);
       newExpanded.delete(id);
@@ -85,7 +122,7 @@ const History = () => {
       setActiveTab(newActiveTab);
     } catch (error) {
       console.error('Failed to delete website:', error);
-      alert('Failed to delete website. Please try again.');
+      setActionError('Could not delete this project. Please try again.');
     } finally {
       setDeleting(null);
     }
@@ -205,9 +242,23 @@ const History = () => {
           </p>
         </div>
 
+        <div className="mb-6 flex flex-wrap gap-3">
+          <input aria-label="Search projects" placeholder="Search names or prompts" value={search} onChange={(e) => setSearch(e.target.value)} className="min-w-48 flex-1 rounded-lg border border-border bg-background p-2" />
+          <select aria-label="Filter by framework" value={frameworkFilter} onChange={(e) => setFrameworkFilter(e.target.value)} className="rounded-lg border border-border bg-background p-2">
+            <option value="all">All frameworks</option><option value="next">Next.js</option><option value="react">React</option><option value="html">HTML</option>
+          </select>
+          <select aria-label="Filter by date" value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} className="rounded-lg border border-border bg-background p-2">
+            <option value="all">All dates</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option>
+          </select>
+          <select aria-label="Sort projects" value={sort} onChange={(e) => setSort(e.target.value)} className="rounded-lg border border-border bg-background p-2">
+            <option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="name">Name A-Z</option>
+          </select>
+        </div>
+        {loadError ? <div role="alert" className="mb-4">{loadError} <Button onClick={fetchWebsites}>Retry</Button></div> : null}
+        {!loading && !loadError && <p className="mb-4 text-sm text-muted-foreground">{visibleWebsites.length} of {websites.length} projects</p>}
         {loading ? (
           <div className="text-center py-12 text-muted-foreground">Loading...</div>
-        ) : websites.length === 0 ? (
+        ) : loadError ? null : websites.length === 0 ? (
           <Card>
             <CardContent className="py-12 text-center text-muted-foreground">
               No history yet. Start generating websites to see your history here.
@@ -215,10 +266,11 @@ const History = () => {
           </Card>
         ) : (
           <div className="space-y-6">
-            {websites.map((website) => (
+            {visibleWebsites.length === 0 && <div className="py-12 text-center">No projects match your filters. <Button variant="outline" onClick={() => { setSearch(''); setFrameworkFilter('all'); setDateFilter('all'); }}>Clear filters</Button></div>}
+            {visibleWebsites.map((website) => (
               <Card key={website.id} className="overflow-hidden transition-all duration-200 hover:border-accent/50">
                 <CardHeader className="border-b border-border bg-card">
-                  <div className="flex items-start justify-between">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="flex-1">
                       <CardTitle className="text-xl font-semibold mb-2 text-foreground">{website.websiteName}</CardTitle>
                       <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -226,7 +278,8 @@ const History = () => {
                         {formatDate(website.createdAt)}
                       </div>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
+                      <Button variant="outline" size="sm" onClick={() => { setDialog({ kind: 'rename', website }); setName(website.websiteName); setActionError(''); }}>Rename</Button>
                       <Button
                         variant="outline"
                         size="sm"
@@ -257,7 +310,7 @@ const History = () => {
                       <Button
                         variant="destructive"
                         size="sm"
-                        onClick={() => handleDelete(website.id)}
+                        onClick={() => { setDialog({ kind: 'delete', website }); setActionError(''); }}
                         disabled={deleting === website.id}
                         className="gap-2 transition-all duration-200"
                       >
@@ -737,6 +790,18 @@ const History = () => {
           </div>
         )}
 
+        {dialog && <ProjectDialog title={dialog.kind === 'rename' ? 'Rename project' : 'Delete project?'} busy={saving || !!deleting} onClose={() => setDialog(null)}>
+          <form onSubmit={(e) => { e.preventDefault(); if (dialog.kind === 'rename') void handleRename(); else void handleDelete(dialog.website.id); }}>
+            {dialog.kind === 'rename' ? <label className="block">Project name
+              <input autoFocus required maxLength={100} value={name} onChange={(e) => setName(e.target.value)} className="mt-2 w-full rounded-lg border border-border bg-background p-2" />
+            </label> : <p>Delete "{dialog.website.websiteName}"? This permanently removes the saved project and cannot be undone.</p>}
+            {actionError && <p role="alert" className="mt-3 text-red-500">{actionError}</p>}
+            <div className="mt-6 flex justify-end gap-3">
+              <Button type="button" variant="outline" autoFocus={dialog.kind === 'delete'} disabled={saving || !!deleting} onClick={() => setDialog(null)}>Cancel</Button>
+              <Button type="submit" variant={dialog.kind === 'delete' ? 'destructive' : 'default'} disabled={saving || !!deleting || (dialog.kind === 'rename' && !name.trim())}>{saving ? 'Saving...' : deleting ? 'Deleting...' : dialog.kind === 'rename' ? 'Save name' : 'Delete project'}</Button>
+            </div>
+          </form>
+        </ProjectDialog>}
         {previewWebsite && (
           previewWebsite.reactBuildStatus &&
           !previewWebsite.reactArtifactUrl &&

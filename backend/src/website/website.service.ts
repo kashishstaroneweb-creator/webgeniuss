@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Website } from '../entities/website.entity';
@@ -3569,18 +3569,17 @@ DESIGN (MANDATORY - PRODUCTION-READY):
   }
 
   /**
-   * Attempts to repair JSON truncated mid-string (e.g. by max_tokens limit).
-   * Appends a closing quote and then closes open objects/arrays.
-   * (We don't skip when content ends with } or ] — that may be inside a string, e.g. CSS.)
+   * Repairs missing container delimiters only. Never close a source-code string:
+   * doing so turns truncated HTML/JS into a superficially valid project.
    */
   private tryRepairTruncatedJson(content: string): string | null {
     const trimmed = content.trim();
     if (!trimmed) return null;
     const suffixes = [
-      '"\n}\n]\n}',
-      '"\n}\n}',
-      '"\n]\n}',
-      '"\n}',
+      '\n}\n]\n}',
+      '\n}\n}',
+      '\n]\n}',
+      '\n}',
     ];
     for (const suffix of suffixes) {
       try {
@@ -3745,6 +3744,8 @@ DESIGN (MANDATORY - PRODUCTION-READY):
       console.log('WebsiteService.extractCodeFromResponse - Using parseV0Response result');
       return parsed;
     }
+    // Do not scrape snippets out of a broken structured project as a legacy app.
+    if (/^\s*(?:```(?:json)?\s*)?\{/.test(response)) return null;
     
     // Try to find component-based JSON object in the response (fallback for malformed output)
     const componentJsonMatch = response.match(/\{[\s\S]*"components"[\s\S]*\}/);
@@ -3831,7 +3832,7 @@ DESIGN (MANDATORY - PRODUCTION-READY):
       hasJs: result.js.length > 0,
     });
     
-    return result;
+    return result.html || result.css || result.js ? result : null;
   }
 
   async getUserWebsites(userId: string) {
@@ -3922,6 +3923,19 @@ DESIGN (MANDATORY - PRODUCTION-READY):
       reactArtifactUrl: (latest || saved).reactArtifactUrl,
       message: saved.framework === 'react' ? 'React preview rebuild queued' : 'Static preview rebuilt',
     };
+  }
+
+  async renameWebsite(websiteId: string, userId: string, websiteName: string) {
+    if (!ObjectId.isValid(websiteId)) throw new BadRequestException('Invalid project ID');
+    const name = websiteName.trim();
+    if (!name || name.length > 100) throw new BadRequestException('Project name must contain 1–100 characters');
+    const website = await this.websiteRepository.findOne({
+      where: { _id: new ObjectId(websiteId), userId } as any,
+    });
+    if (!website || website.userId !== userId) throw new NotFoundException('Project not found');
+    website.websiteName = name;
+    await this.websiteRepository.save(website);
+    return { id: website.id.toString(), websiteName: name };
   }
 
   async deleteWebsite(websiteId: string, userId: string) {

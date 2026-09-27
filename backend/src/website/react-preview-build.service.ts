@@ -49,6 +49,44 @@ export class ReactPreviewBuildService {
     private readonly websiteRepository: Repository<Website>,
   ) {}
 
+  /** Production source bundle: omit iframe messaging, preview paths and runtime URLs. */
+  deploymentFiles(site: Website): Array<{ file: string; data: string }> {
+    if (site.framework === 'html') {
+      if (!site.htmlCode?.trim()) throw new Error('This project has no saved HTML to deploy.');
+      return [
+        { file: 'index.html', data: this.prepareStaticIndexHtml(site.htmlCode, site.cssCode || '', site.jsCode || '', site.websiteName) },
+        { file: 'styles.css', data: site.cssCode || '' },
+        { file: 'script.js', data: site.jsCode || '' },
+      ];
+    }
+    const vite = site.viteConfig;
+    this.assertCompleteSavedHtml(vite?.indexHtml);
+    if (!vite?.mainJsx && !vite?.mainJs && !site.components?.length) throw new Error('This project has no saved frontend source to deploy.');
+    const packageJson = JSON.parse(this.normalizePackageJson(vite?.packageJson || '{}'));
+    packageJson.scripts = { build: 'vite build', dev: 'vite' };
+    const components = (site.components || []).map((component) => ({
+      ...component, path: component.path || `src/components/${component.name}.jsx`,
+    }));
+    const first = components.find((component) => /\/pages\//.test(component.path)) || components[0];
+    const entryPath = first ? path.posix.relative('src', first.path.replace(/\\/g, '/')) : '';
+    const fallbackMain = first ? [
+      "import React from 'react';", "import ReactDOM from 'react-dom/client';", "import './style.css';",
+      `import App from '${entryPath.startsWith('.') ? entryPath : './' + entryPath}';`,
+      "ReactDOM.createRoot(document.getElementById('root')).render(<App />);",
+    ].join('\n') : '';
+    const main = this.ensureEntryImports(vite?.mainJsx || vite?.mainJs || fallbackMain, components);
+    return [
+      { file: 'package.json', data: JSON.stringify(packageJson, null, 2) },
+      { file: 'vite.config.js', data: this.normalizeViteConfig(vite?.viteConfig).replace(/base:\s*['"]\.\/['"]/, "base: '/'") },
+      { file: 'index.html', data: vite?.indexHtml || this.defaultIndexHtml(this.escapeHtml(site.websiteName)) },
+      { file: 'src/main.jsx', data: this.stripTypeScriptSyntaxForPreview(main, 'src/main.jsx') },
+      { file: 'src/style.css', data: vite?.styleCss || '' },
+      ...components.map((component) => ({
+        file: component.path, data: component.code || '',
+      })),
+    ];
+  }
+
   async enqueue(websiteId: string): Promise<void> {
     const site = await this.websiteRepository.findOne({
       where: { _id: new ObjectId(websiteId) } as any,
@@ -302,6 +340,7 @@ export class ReactPreviewBuildService {
 
     const packageJson = this.normalizePackageJson(pkgRaw);
     const viteConfig = this.normalizeViteConfig(vite.viteConfig);
+    this.assertCompleteSavedHtml(vite.indexHtml);
     const indexHtml = this.injectFullStackRuntimeConfig(
       vite.indexHtml || this.defaultIndexHtml(site.websiteName || 'React Preview'),
       site,
@@ -352,7 +391,15 @@ export class ReactPreviewBuildService {
     if (!apiBase) return html;
     const script = `<script>globalThis.__WEBGENIUS_API_BASE__=${JSON.stringify(apiBase)};</script>`;
     if (/<\/head>/i.test(html)) return html.replace(/<\/head>/i, `  ${script}\n</head>`);
+    if (/<body\b[^>]*>/i.test(html)) return html.replace(/<body\b[^>]*>/i, (tag) => `${tag}\n${script}`);
+    if (/<!doctype\b[^>]*>/i.test(html)) return html.replace(/<!doctype\b[^>]*>/i, (tag) => `${tag}\n${script}`);
     return `${script}\n${html}`;
+  }
+
+  private assertCompleteSavedHtml(html?: string): void {
+    if (html?.trim() && (!/<html\b[^>]*>/i.test(html) || !/<\/html\s*>/i.test(html))) {
+      throw new Error('Generated frontend HTML is incomplete. Regenerate this project to recover the missing source files.');
+    }
   }
 
   private rewriteRelativeApiCalls(code: string, site: Website): string {

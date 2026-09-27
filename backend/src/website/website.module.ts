@@ -10,11 +10,14 @@ import { ReactPreviewBuildService } from './react-preview-build.service';
 import { User } from '../entities/user.entity';
 import { CreditLedger } from '../entities/credit-ledger.entity';
 import { GenerationUsage } from '../entities/generation-usage.entity';
+import { WebsiteDeployment } from '../entities/website-deployment.entity';
+import { VercelDeploymentService } from './vercel-deployment.service';
+import { VercelDeploymentController } from './vercel-deployment.controller';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Website, WebsiteTemplate, PromptHistory, User, CreditLedger, GenerationUsage])],
-  controllers: [WebsiteController, TemplatesController],
-  providers: [WebsiteService, ReactPreviewBuildService],
+  imports: [TypeOrmModule.forFeature([Website, WebsiteTemplate, PromptHistory, User, CreditLedger, GenerationUsage, WebsiteDeployment])],
+  controllers: [WebsiteController, TemplatesController, VercelDeploymentController],
+  providers: [WebsiteService, ReactPreviewBuildService, VercelDeploymentService],
   exports: [WebsiteService],
 })
 export class WebsiteModule {}

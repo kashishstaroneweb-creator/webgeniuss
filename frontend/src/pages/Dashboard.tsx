@@ -15,6 +15,7 @@ import { RecentProjects } from '@/components/RecentProjects';
 import { VoiceVisualizer } from '@/components/VoiceVisualizer';
 import { MobilePreviewStudio } from '@/components/MobilePreviewStudio';
 import { FullStackCodeWorkspace } from '@/components/FullStackCodeWorkspace';
+import { VercelDeployButton } from '@/components/VercelDeployButton';
 import { useVoiceRecognition } from '@/lib/useVoiceRecognition';
 import { useVoiceSynthesis } from '@/lib/useVoiceSynthesis';
 import { useTypewriter } from '@/lib/useTypewriter';
@@ -139,9 +140,27 @@ const Dashboard = () => {
   const generatedWebsiteRef = useRef<GeneratedWebsite | null>(null);
   const { user, updateUser } = useAuthStore();
   const { setCollapsed } = useSidebarStore();
-  const [prompt, setPrompt] = useState('');
+  const draftKey = `webgenius:project-draft:${user?.id || 'anonymous'}`;
+  const readDraft = () => {
+    try {
+      const draft = JSON.parse(localStorage.getItem(draftKey) || '{}');
+      return { prompt: typeof draft.prompt === 'string' ? draft.prompt : '', name: typeof draft.name === 'string' ? draft.name : '' };
+    } catch { return { prompt: '', name: '' }; }
+  };
+  const [prompt, setPrompt] = useState(() => websiteIdFromUrl ? '' : readDraft().prompt);
+  const [generationError, setGenerationError] = useState('');
+  const retryGeneration = useRef<(() => Promise<void>) | null>(null);
+  const generationBusy = useRef(false);
   const [loading, setLoading] = useState(false);
-  const [websiteName, setWebsiteName] = useState('');
+  const [websiteName, setWebsiteName] = useState(() => websiteIdFromUrl ? '' : readDraft().name);
+  useEffect(() => {
+    if (websiteIdFromUrl || prevWebsiteIdFromUrlRef.current || generatedWebsiteRef.current) return;
+    try {
+      if (prompt || websiteName) localStorage.setItem(draftKey, JSON.stringify({ prompt, name: websiteName }));
+      else localStorage.removeItem(draftKey);
+    } catch { /* Storage can be unavailable or full; typing remains usable. */ }
+  }, [prompt, websiteName, websiteIdFromUrl, draftKey]);
+
   const [framework, setFramework] = useState<WebsiteFramework>('next');
   const [fullStackMode, setFullStackMode] = useState(false);
   const [generatedWebsite, setGeneratedWebsite] = useState<GeneratedWebsite | null>(null);
@@ -200,6 +219,9 @@ const Dashboard = () => {
   const showSplitView = isGenerating || loadingHistoryWebsite || generatedWebsite !== null;
 
   const applyGeneratedWebsite = (saved: GeneratedWebsite) => {
+    try { localStorage.removeItem(draftKey); } catch { /* Storage is optional. */ }
+    setGenerationError('');
+    retryGeneration.current = null;
     voice.speak(saved.backendFiles?.length ? 'Your full-stack application is ready.' : 'Your website is ready.');
     setGeneratedWebsite(saved);
     setPromptAttachments([]);
@@ -358,8 +380,9 @@ const Dashboard = () => {
     prevWebsiteIdFromUrlRef.current = websiteIdFromUrl;
     if (prev && !websiteIdFromUrl) {
       setGeneratedWebsite(null);
-      setPrompt('');
-      setWebsiteName('');
+      setPrompt(readDraft().prompt);
+      setWebsiteName(readDraft().name);
+      setGenerationError('');
       setAddOnPrompt('');
       setShowCodeView(false);
       setIsGenerating(false);
@@ -566,6 +589,7 @@ const Dashboard = () => {
   };
 
   const handleGenerate = async (overridePrompt?: string) => {
+    if (generationBusy.current) return;
     const imageAttachments = getV0ImageAttachments(promptAttachments);
     const finalPrompt =
       (overridePrompt || prompt).trim() ||
@@ -573,10 +597,15 @@ const Dashboard = () => {
         ? 'Create a complete website based on the attached image reference. Match its layout, visual style, spacing, colors, and content hierarchy as closely as possible while making the result responsive and production-ready.'
         : '');
     if (!finalPrompt.trim() && imageAttachments.length === 0) {
-      alert('Please enter a prompt or attach an image reference');
+      setGenerationError('Enter a description or attach a reference image before generating.');
+      retryGeneration.current = null;
       return;
     }
     const promptForRequest = appendAttachmentContext(finalPrompt, promptAttachments);
+    generationBusy.current = true;
+    setGenerationError('');
+    // Keep the failed request's prompt, attachments, template and options for an explicit retry.
+    retryGeneration.current = () => handleGenerate(finalPrompt);
 
     setLoading(true);
     setIsGenerating(true);
@@ -717,33 +746,27 @@ const Dashboard = () => {
 
       applyGeneratedWebsite(saved);
     } catch (error: any) {
-      const errorMessage = error.response?.data?.message || error.message || 'Failed to generate website';
       const status = error.response?.status || error.status;
-      const errorData = error.response?.data || error.errorData;
-      
-      console.error('Website generation error:', {
-        status,
-        message: errorMessage,
-        errorData,
-        token: localStorage.getItem('token') ? `exists (${localStorage.getItem('token')?.substring(0, 20)}...)` : 'missing',
-        url: error.config?.url,
-        method: error.config?.method,
-        headers: error.config?.headers
-      });
-      
+      const raw = error.response?.data?.message || error.message || '';
+      const message = Array.isArray(raw) ? raw.join('. ') : String(raw);
       if (status === 401) {
-        const detailedError = errorData?.message || errorMessage;
-        alert(`Authentication Error (401):\n\n${detailedError}\n\nThis usually means:\n- Your token has expired\n- Your token is invalid\n- You need to login again\n\nRedirecting to login...`);
-        localStorage.removeItem('token');
-        localStorage.removeItem('user');
-        useAuthStore.getState().logout();
-        setTimeout(() => {
-          window.location.href = '/login';
-        }, 2000);
+        setGenerationError('Your session has expired. Sign in again to continue. Your draft is saved.');
+        retryGeneration.current = null;
+      } else if (/not enough credits|insufficient credits/i.test(message) || status === 402) {
+        setGenerationError('You do not have enough credits for this request. Check your subscription or credit balance before retrying.');
+      } else if (status === 429 || /rate.limit/i.test(message)) {
+        setGenerationError('The generation service is busy. Wait a moment, then retry.');
+      } else if (status === 403 || /forbidden|api.key|unauthorized/i.test(message)) {
+        setGenerationError('The generation service could not authorize this request. Please contact support if this continues.');
+      } else if (/fetch|network|timeout|stream.*(ended|closed)|no.*website/i.test(message) || status === 504) {
+        setGenerationError('We lost contact with the generation service. Check History before retrying: your project may have been saved.');
+      } else if (status === 400) {
+        setGenerationError('The request could not be accepted. Check your prompt and attachments, then try again.');
       } else {
-        alert(`Error (${status || 'Unknown'}): ${errorMessage}`);
+        setGenerationError('Generation could not finish. Your prompt is still available. Please retry, or check History if the connection was interrupted.');
       }
     } finally {
+      generationBusy.current = false;
       setLoading(false);
       setIsGenerating(false);
     }
@@ -951,6 +974,16 @@ const Dashboard = () => {
 
   return (
     <div className="flex-1 h-full flex flex-col relative">
+      {generationError && <div role="alert" className="m-4 rounded-xl border border-red-400/40 bg-card p-4">
+        <p className="font-medium">Generation needs attention</p>
+        <p className="mt-1 text-sm text-muted-foreground">{generationError}</p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {retryGeneration.current && <Button disabled={loading} onClick={() => void retryGeneration.current?.()}>Retry generation</Button>}
+          <a href="/history" className="px-3 py-2 text-sm underline">Check History</a>
+          {generationError.includes('session has expired') && <Button onClick={() => useAuthStore.getState().logout()}>Sign in again</Button>}
+          <Button variant="ghost" onClick={() => setGenerationError('')}>Dismiss</Button>
+        </div>
+      </div>}
       {!showSplitView ? (
         // Reference design layout - before generation
         <div className="flex-1 overflow-y-auto">
@@ -1422,6 +1455,7 @@ const Dashboard = () => {
                   </CardTitle>
                   {generatedWebsite && (
                     <div className="flex w-full flex-wrap items-center gap-2 xl:w-auto xl:justify-end">
+                      <VercelDeployButton key={generatedWebsite.id} websiteId={generatedWebsite.id} websiteName={generatedWebsite.websiteName} framework={generatedWebsite.framework} disabled={editLoading || loading || !generatedWebsite.id} />
                       {!showCodeView && (
                         <Button
                           variant={sectionSelectionMode ? 'default' : 'outline'}
