@@ -9,10 +9,24 @@ import { FullStackController } from './fullstack.controller';
 import { ProjectMergerService } from './project-merger.service';
 import { BackendRuntimeService } from './backend-runtime.service';
 import { BackendRuntimeController } from './backend-runtime.controller';
+import { AppPlannerService } from './app-planner.service';
+import { BackendBuilderService } from './backend-builder.service';
+import { FrontendBuilderService } from './frontend-builder.service';
+import { GenerationValidatorService } from './generation-validator.service';
 
 @Module({
   imports: [TypeOrmModule.forFeature([Website]), WebsiteModule],
   controllers: [FullStackController, BackendRuntimeController],
-  providers: [OpenAIBackendService, BlueprintPromptService, ProjectMergerService, FullStackCoordinatorService, BackendRuntimeService],
+  providers: [
+    OpenAIBackendService,
+    BlueprintPromptService,
+    ProjectMergerService,
+    FullStackCoordinatorService,
+    BackendRuntimeService,
+    AppPlannerService,
+    BackendBuilderService,
+    FrontendBuilderService,
+    GenerationValidatorService,
+  ],
 })
 export class FullStackModule {}

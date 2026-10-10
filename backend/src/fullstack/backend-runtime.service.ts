@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import axios from 'axios';
 import { ChildProcessWithoutNullStreams, spawn } from 'child_process';
@@ -7,6 +7,7 @@ import { ObjectId } from 'mongodb';
 import * as path from 'path';
 import { Repository } from 'typeorm';
 import { Website } from '../entities/website.entity';
+import { GENERATED_AUTH_SOURCE, GENERATED_SERVER_SOURCE } from './generated-auth.template';
 
 interface RunningBackend {
   child: ChildProcessWithoutNullStreams;
@@ -17,6 +18,7 @@ interface RunningBackend {
 
 @Injectable()
 export class BackendRuntimeService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(BackendRuntimeService.name);
   private readonly running = new Map<string, RunningBackend>();
   private readonly starting = new Map<string, Promise<Website>>();
   private readonly runtimeRoot = path.resolve(process.env.FULLSTACK_RUNTIME_ROOT || path.join(process.cwd(), '.fullstack-runtimes'));
@@ -47,6 +49,7 @@ export class BackendRuntimeService implements OnModuleInit, OnModuleDestroy {
     }
     website.backendFiles = backendFiles;
     website.backendStatus = 'generated';
+    this.logger.log(`Deploying generated backend runtime ${websiteId} with ${backendFiles.length} files`);
     const persisted = await this.websites.save(website);
     const persistedId = persisted.id.toString();
     const existing = this.starting.get(persistedId);
@@ -82,16 +85,23 @@ export class BackendRuntimeService implements OnModuleInit, OnModuleDestroy {
       const target = path.resolve(workspace, file.path);
       if (!target.startsWith(workspace + path.sep)) throw new BadRequestException('Invalid generated backend path');
       if (file.path === 'data.json' && fs.existsSync(target)) continue;
-      await fs.promises.writeFile(target, file.content, 'utf8');
+      const content = file.path === 'server.js'
+        ? GENERATED_SERVER_SOURCE
+        : file.path === 'auth.js'
+          ? GENERATED_AUTH_SOURCE
+          : file.content;
+      await fs.promises.writeFile(target, content, 'utf8');
     }
 
     website.backendStatus = 'installing';
     website.backendPort = port;
     website.backendLogs = 'Installing approved backend dependencies...';
     await this.websites.save(website);
+    this.logger.log(`Starting generated backend ${websiteId} for user ${userId} on port ${port}`);
 
     try {
       const installLogs = await this.runInstall(workspace);
+      if (installLogs.trim()) this.logger.log(`Install logs for generated backend ${websiteId}:\n${installLogs.trim()}`);
       const child = spawn(process.execPath, ['server.js'], {
         cwd: workspace,
         shell: false,
@@ -108,6 +118,7 @@ export class BackendRuntimeService implements OnModuleInit, OnModuleDestroy {
       website.backendProcessId = child.pid;
       website.backendPreviewUrl = `/fullstack/runtime/${websiteId}`;
       website.backendLogs = runtime.logs.slice(-60_000);
+      this.logger.log(`Generated backend ${websiteId} is healthy on port ${port}`);
       return await this.websites.save(website);
     } catch (error: any) {
       const runtime = this.running.get(websiteId);
@@ -116,6 +127,10 @@ export class BackendRuntimeService implements OnModuleInit, OnModuleDestroy {
       website.backendStatus = 'failed';
       website.backendLogs = `${website.backendLogs || ''}\n${error?.message || String(error)}`.slice(-60_000);
       await this.websites.save(website);
+      this.logger.error(
+        `Generated backend ${websiteId} failed to start: ${error?.message || String(error)}`,
+        error?.stack,
+      );
       throw error;
     }
   }
@@ -185,6 +200,7 @@ export class BackendRuntimeService implements OnModuleInit, OnModuleDestroy {
 
   private runInstall(workspace: string): Promise<string> {
     if (process.env.FULLSTACK_SHARED_DEPENDENCIES === '1') {
+      this.logger.log('Skipping generated backend npm install because FULLSTACK_SHARED_DEPENDENCIES=1');
       return Promise.resolve('Using dependencies from the WebGenius Render service.\n');
     }
     const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
@@ -225,10 +241,16 @@ export class BackendRuntimeService implements OnModuleInit, OnModuleDestroy {
   }
 
   private captureLogs(websiteId: string, runtime: RunningBackend): void {
-    const append = (data: Buffer) => (runtime.logs = (runtime.logs + data.toString()).slice(-60_000));
-    runtime.child.stdout.on('data', append);
-    runtime.child.stderr.on('data', append);
+    const append = (data: Buffer, level: 'log' | 'warn') => {
+      const text = data.toString();
+      runtime.logs = (runtime.logs + text).slice(-60_000);
+      const trimmed = text.trim();
+      if (trimmed) this.logger[level](`Generated backend ${websiteId}: ${trimmed}`);
+    };
+    runtime.child.stdout.on('data', (data) => append(data, 'log'));
+    runtime.child.stderr.on('data', (data) => append(data, 'warn'));
     runtime.child.once('exit', () => {
+      this.logger.warn(`Generated backend ${websiteId} exited`);
       const current = this.running.get(websiteId);
       if (current?.child === runtime.child) {
         this.running.delete(websiteId);

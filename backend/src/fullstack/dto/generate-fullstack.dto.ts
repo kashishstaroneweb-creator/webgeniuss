@@ -1,4 +1,6 @@
-import { IsNotEmpty, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsIn, IsNotEmpty, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+
+export type FullStackGenerationMode = 'simple' | 'production-app' | 'production-crm';
 
 export class GenerateFullStackDto {
   @IsString()
@@ -11,4 +13,9 @@ export class GenerateFullStackDto {
   @IsOptional()
   @MaxLength(120)
   websiteName?: string;
+
+  @IsString()
+  @IsOptional()
+  @IsIn(['simple', 'production-app', 'production-crm'])
+  mode?: FullStackGenerationMode;
 }

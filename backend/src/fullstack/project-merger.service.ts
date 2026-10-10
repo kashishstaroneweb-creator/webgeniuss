@@ -1,9 +1,15 @@
 import { BadGatewayException, Injectable } from '@nestjs/common';
 import { FullStackPlan, MergedFullStackProject } from './fullstack.types';
+import { GenerationValidatorService } from './generation-validator.service';
 
 @Injectable()
 export class ProjectMergerService {
+  constructor(private readonly validator?: GenerationValidatorService) {}
+
   merge(plan: FullStackPlan, frontendPrompt: string): MergedFullStackProject {
+    if (this.validator) {
+      this.validator.validateApi(plan.blueprint);
+    }
     const endpointKeys = new Set<string>();
     for (const endpoint of plan.blueprint.api) {
       if (!endpoint.path?.startsWith('/api/')) {

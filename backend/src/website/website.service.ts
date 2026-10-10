@@ -20,6 +20,15 @@ import { ReactPreviewBuildService } from './react-preview-build.service';
 
 type WebsiteFramework = 'next' | 'react' | 'html';
 type V0MessageAttachment = { url: string };
+type V0GenerationOptions = {
+  systemPromptOverride?: string;
+  userPromptOverride?: string;
+  maxAttempts?: number;
+  retryWithSync?: boolean;
+  promptLengthWarningChars?: number;
+  promptLengthHardLimitChars?: number;
+  label?: string;
+};
 
 @Injectable()
 export class WebsiteService {
@@ -77,6 +86,28 @@ export class WebsiteService {
   private promptPreview(prompt: string): string {
     const clean = (prompt || '').replace(/\s+/g, ' ').trim();
     return clean.length > 220 ? `${clean.slice(0, 220)}...` : clean;
+  }
+
+  private checkV0PromptBudget(label: string, systemPrompt: string, userPrompt: string, options?: V0GenerationOptions) {
+    const messageLength = userPrompt.length;
+    const systemLength = systemPrompt.length;
+    const totalLength = systemLength + messageLength;
+    const warningAt = options?.promptLengthWarningChars;
+    const hardLimit = options?.promptLengthHardLimitChars;
+    const payload = { label, systemLength, messageLength, totalLength };
+
+    console.log('WebsiteService.generateWebsite - final v0 prompt length:', payload);
+    if (warningAt && messageLength > warningAt) {
+      console.warn('WebsiteService.generateWebsite - v0 user prompt length warning:', {
+        ...payload,
+        warningAt,
+      });
+    }
+    if (hardLimit && messageLength > hardLimit) {
+      throw new BadRequestException(
+        `Full-stack v0 prompt is too large (${messageLength} chars). Limit is ${hardLimit} chars. Simplify the generated API plan and retry.`,
+      );
+    }
   }
 
   private isCreditBypassEnabled(): boolean {
@@ -887,6 +918,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
     displayPrompt?: string,
     templateId?: string,
     skipUsageValidation = false,
+    v0Options?: V0GenerationOptions,
   ) {
     const resolvedFramework = this.normalizeFramework(framework);
     const creditCost = this.getCreditCost('generate', resolvedFramework, attachments);
@@ -918,13 +950,17 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
         'WebsiteService.generateWebsite - v0 chats.create: async+poll (or sync on retry). Use POST /website/generate-stream for experimental_stream + SSE.',
       );
 
-      const systemPrompt = this.getV0WebsiteSystemPrompt(resolvedFramework);
+      const systemPrompt = v0Options?.systemPromptOverride || this.getV0WebsiteSystemPrompt(resolvedFramework);
 
-      const userPrompt = this.buildV0GenerationUserMessage(promptForModel, websiteName, resolvedFramework);
+      const userPrompt = v0Options?.userPromptOverride || this.buildV0GenerationUserMessage(promptForModel, websiteName, resolvedFramework);
+      this.checkV0PromptBudget(v0Options?.label || 'website-generate', systemPrompt, userPrompt, v0Options);
       console.log('WebsiteService.generateWebsite - outbound v0 payload preview:', {
         framework: resolvedFramework,
+        label: v0Options?.label || 'website-generate',
         systemLength: systemPrompt.length,
         messageLength: userPrompt.length,
+        maxAttempts: v0Options?.maxAttempts,
+        retryWithSync: v0Options?.retryWithSync,
         messagePreview: userPrompt.substring(0, 1200),
       });
 
@@ -935,6 +971,7 @@ For dynamic class names use: className={'base-class ' + (condition ? 'active' : 
         systemPrompt,
         userPrompt,
         attachments,
+        v0Options,
       );
       console.log('WebsiteService.generateWebsite - demoUrl from fetchWebsiteCodeFromV0:', {
         chatId: v0ChatId || null,
@@ -3228,8 +3265,9 @@ DESIGN (MANDATORY - PRODUCTION-READY):
     systemPrompt: string,
     userPrompt: string,
     attachments?: V0MessageAttachment[],
+    options?: V0GenerationOptions,
   ): Promise<{ responseContent: string; websiteCode: any; v0ChatId: string; v0DemoUrl?: string }> {
-    const MAX_V0_ATTEMPTS = Number(process.env.V0_MAX_RETRIES) || 3;
+    const MAX_V0_ATTEMPTS = options?.maxAttempts ?? (Number(process.env.V0_MAX_RETRIES) || 3);
     const RETRY_DELAY_MS = 1500;
     const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -3238,7 +3276,7 @@ DESIGN (MANDATORY - PRODUCTION-READY):
 
     for (let attempt = 1; attempt <= MAX_V0_ATTEMPTS; attempt++) {
       console.log('WebsiteService - v0 Platform API attempt', attempt, 'of', MAX_V0_ATTEMPTS);
-      const syncOnRetry = process.env.V0_WEBSITE_RETRY_WITH_SYNC !== '0';
+      const syncOnRetry = options?.retryWithSync ?? (process.env.V0_WEBSITE_RETRY_WITH_SYNC !== '0');
       const mode: 'sync' | 'async' = syncOnRetry && attempt > 1 ? 'sync' : 'async';
       if (attempt > 1 && mode === 'sync') {
         console.log(

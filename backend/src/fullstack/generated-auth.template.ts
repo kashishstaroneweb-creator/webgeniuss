@@ -139,7 +139,8 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const createAuth = require('./auth');
-const registerRoutes = require('./routes');
+const routesModule = require('./routes');
+const registerRoutes = typeof routesModule === 'function' ? routesModule : routesModule && routesModule.registerRoutes;
 const app = express();
 app.disable('x-powered-by');
 app.use(cors({ allowedHeaders: ['Content-Type', 'Authorization'] }));
@@ -149,6 +150,7 @@ const auth = createAuth();
 app.use('/api/auth', auth.router);
 // Authentication runs before every generated application route.
 app.use('/api', auth.requireAuth);
+if (typeof registerRoutes !== 'function') throw new Error('routes.js must export registerRoutes(app)');
 registerRoutes(app);
 app.use((_req, res) => res.status(404).json({ message: 'Endpoint not found' }));
 app.use((error, _req, res, _next) => {

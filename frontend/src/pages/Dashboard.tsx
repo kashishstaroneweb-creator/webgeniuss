@@ -641,7 +641,7 @@ const Dashboard = () => {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${token}`,
           },
-          body: JSON.stringify({ prompt: promptForRequest, websiteName: websiteNameFinal }),
+          body: JSON.stringify({ prompt: promptForRequest, websiteName: websiteNameFinal, mode: 'production-app' }),
         });
         const body = await response.json().catch(() => ({}));
         if (!response.ok) {
@@ -1455,6 +1455,30 @@ const Dashboard = () => {
                   </CardTitle>
                   {generatedWebsite && (
                     <div className="flex w-full flex-wrap items-center gap-2 xl:w-auto xl:justify-end">
+                      {generatedWebsite.backendFiles?.length ? (
+                        <span className={cn(
+                          'rounded-full border px-2.5 py-1 text-xs font-medium',
+                          generatedWebsite.backendStatus === 'running'
+                            ? 'border-green-500/40 text-green-600 dark:text-green-400'
+                            : generatedWebsite.backendStatus === 'failed'
+                              ? 'border-red-500/40 text-red-600 dark:text-red-400'
+                              : 'border-border text-muted-foreground'
+                        )}>
+                          API {generatedWebsite.backendStatus || 'generated'}
+                        </span>
+                      ) : null}
+                      {(generatedWebsite.framework === 'react' || generatedWebsite.framework === 'html') ? (
+                        <span className={cn(
+                          'rounded-full border px-2.5 py-1 text-xs font-medium',
+                          generatedWebsite.reactBuildStatus === 'ready'
+                            ? 'border-green-500/40 text-green-600 dark:text-green-400'
+                            : generatedWebsite.reactBuildStatus === 'failed'
+                              ? 'border-red-500/40 text-red-600 dark:text-red-400'
+                              : 'border-border text-muted-foreground'
+                        )}>
+                          Frontend {generatedWebsite.reactBuildStatus || 'queued'}
+                        </span>
+                      ) : null}
                       <VercelDeployButton key={generatedWebsite.id} websiteId={generatedWebsite.id} websiteName={generatedWebsite.websiteName} framework={generatedWebsite.framework} disabled={editLoading || loading || !generatedWebsite.id} />
                       {!showCodeView && (
                         <Button

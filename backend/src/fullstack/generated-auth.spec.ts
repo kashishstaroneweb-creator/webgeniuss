@@ -135,3 +135,32 @@ describe('Generated backend authentication (real HTTP and filesystem)', () => {
     expect(await fs.readFile(path.join(directory, 'auth-data.json'), 'utf8')).toBe('broken');
   });
 });
+
+describe('Generated backend route module compatibility', () => {
+  it('accepts model-written { registerRoutes } exports', async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'webgenius-routes-test-'));
+    const factory = loadSource(GENERATED_AUTH_SOURCE, require, directory);
+    const app = loadSource(GENERATED_SERVER_SOURCE, (name) => {
+      if (name === './auth') return () => factory({ storePath: path.join(directory, 'auth-data.json') });
+      if (name === './routes') {
+        return {
+          registerRoutes: (application: any) =>
+            application.get('/api/private', (req: any, res: any) => res.json({ user: req.user })),
+        };
+      }
+      if (name === 'dotenv') return { config: () => {} };
+      return require(name);
+    }, directory);
+    const server = await new Promise<Server>((resolve) => {
+      const instance = app.listen(0, '127.0.0.1', () => resolve(instance));
+    });
+    try {
+      const baseURL = `http://127.0.0.1:${(server.address() as any).port}`;
+      const response = await axios.get('/api/health', { baseURL, proxy: false, validateStatus: () => true });
+      expect(response.status).toBe(200);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+});

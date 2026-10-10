@@ -70,7 +70,7 @@ export class VercelDeploymentService {
       record.message = 'Submission was interrupted. Check the Vercel dashboard before deploying again.';
       await this.deployments.save(record);
     }
-    return { configured, requiresBackendUrl: !!site.backendFiles?.length, deployment: this.view(record) };
+    return { configured, requiresBackendUrl: !!site.backendFiles?.length && !this.runtimeBackendUrl(site), deployment: this.view(record) };
   }
 
   async deploy(id: string, userId: string, dto: DeployWebsiteDto) {
@@ -80,7 +80,8 @@ export class VercelDeploymentService {
     if (!user || user.accountStatus === 'suspended') throw new ForbiddenException('Your account cannot deploy projects.');
     const teamId = process.env.VERCEL_TEAM_ID?.trim() || undefined;
     const options = this.requestOptions(teamId);
-    const backendUrl = publicBackendUrl(dto.backendUrl);
+    const runtimeBackendUrl = this.runtimeBackendUrl(site);
+    const backendUrl = publicBackendUrl(dto.backendUrl) || runtimeBackendUrl;
     if (site.backendFiles?.length && !backendUrl) throw new BadRequestException('Enter the hosted backend base URL before deploying this full-stack frontend.');
     if (this.submitting.has(id)) throw new ConflictException('A deployment is already being submitted.');
     this.submitting.add(id);
@@ -133,5 +134,15 @@ export class VercelDeploymentService {
       }
       throw new BadGatewayException(record?.message || 'Could not submit deployment to Vercel.');
     } finally { this.submitting.delete(id); }
+  }
+
+  private runtimeBackendUrl(site: Website): string | undefined {
+    if (!site.backendFiles?.length || !site.backendPreviewUrl) return undefined;
+    const publicBase =
+      process.env.BACKEND_PUBLIC_BASE_URL?.trim() ||
+      process.env.PUBLIC_BACKEND_BASE_URL?.trim() ||
+      process.env.RENDER_EXTERNAL_URL?.trim();
+    if (!publicBase) return undefined;
+    return publicBackendUrl(`${publicBase.replace(/\/+$/, '')}${site.backendPreviewUrl}`);
   }
 }

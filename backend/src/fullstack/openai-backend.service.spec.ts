@@ -52,7 +52,40 @@ describe('Backend generation authentication assembly', () => {
     const plan = makePlan();
     plan.backendFiles[0].content += '\napp.listen(4000);';
     jest.spyOn(axios, 'post').mockResolvedValue({ data: { output_text: JSON.stringify(plan) } });
-    await expect(new OpenAIBackendService().generateDirect('Build tasks', 'Tasks')).rejects.toThrow('without starting a server');
+    await expect(new OpenAIBackendService().generateDirect('Build tasks', 'Tasks')).rejects.toThrow('must not start a server');
+  });
+
+  it('accepts the safe exports.registerRoutes backend shape', async () => {
+    const plan = makePlan();
+    plan.backendFiles[0].content = [
+      'function registerRoutes(app) {',
+      "  app.get('/api/tasks', (req, res) => res.json([]));",
+      '}',
+      'exports.registerRoutes = registerRoutes;',
+    ].join('\n');
+    jest.spyOn(axios, 'post').mockResolvedValue({ data: { output_text: JSON.stringify(plan) } });
+
+    const generated = await new OpenAIBackendService().generateDirect('Build tasks', 'Tasks');
+
+    expect(generated.backendFiles.find((file) => file.path === 'routes.js')?.content)
+      .toContain('exports.registerRoutes = registerRoutes');
+  });
+
+  it('normalizes generated uuid usage to Node crypto.randomUUID', async () => {
+    const plan = makePlan();
+    plan.backendFiles[0].content = [
+      "const { v4: uuidv4 } = require('uuid');",
+      "module.exports = function(app) { app.get('/api/tasks', (req, res) => res.json([{ id: uuidv4() }])); };",
+    ].join('\n');
+    plan.backendFiles[1].content = JSON.stringify({ dependencies: { express: '^4.18.0', uuid: '^9.0.0' } });
+    jest.spyOn(axios, 'post').mockResolvedValue({ data: { output_text: JSON.stringify(plan) } });
+
+    const generated = await new OpenAIBackendService().generateDirect('Build tasks', 'Tasks');
+
+    expect(generated.backendFiles.find((file) => file.path === 'routes.js')?.content)
+      .toContain('require("crypto").randomUUID()');
+    const manifest = JSON.parse(generated.backendFiles.find((file) => file.path === 'package.json')!.content);
+    expect(manifest.dependencies.uuid).toBeUndefined();
   });
 
   it('validates remote plans and rejects mismatched authentication code', async () => {

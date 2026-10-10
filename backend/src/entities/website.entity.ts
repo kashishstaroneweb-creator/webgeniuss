@@ -8,6 +8,7 @@ export interface GeneratedProjectFile {
 }
 
 export interface FullStackBlueprint {
+  blueprintVersion?: 1 | 2;
   projectName: string;
   summary: string;
   features: string[];
@@ -22,6 +23,24 @@ export interface FullStackBlueprint {
     requestBody: Array<{ name: string; type: string; required: boolean }>;
     responseShape: string;
   }>;
+  modules?: Array<{
+    key: string;
+    name: string;
+    description: string;
+    entityNames: string[];
+    pagePaths: string[];
+  }>;
+  entities?: Array<{
+    name: string;
+    collection: string;
+    ownerScoped: boolean;
+    fields: Array<{ name: string; type: 'string' | 'number' | 'boolean' | 'date' | 'enum' | 'relation'; required: boolean; relationTo?: string; options?: string[] }>;
+  }>;
+  relations?: Array<{ from: string; to: string; type: 'many-to-one' | 'one-to-many'; field: string }>;
+  pages?: Array<{ path: string; name: string; moduleKey: string; purpose: string; primaryApi: string[] }>;
+  navigation?: Array<{ label: string; path: string; moduleKey: string }>;
+  dashboardWidgets?: Array<{ key: string; title: string; metric: string; sourceApi: string }>;
+  roles?: Array<{ name: string; description: string; permissions: string[] }>;
 }
 
 @Entity('websites')
